@@ -1,0 +1,27 @@
+# Build artifacts
+build/
+*.o
+*.elf
+*.bflt
+*.gdb
+
+# Toolchain
+toolchain/
+buildroot-*/
+
+# Editor
+.vscode/
+*.swp
+*.swo
+*~
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+tests/output/
+
+# Device firmware backup (proprietary Strand binaries — not ours to distribute)
+dump/
