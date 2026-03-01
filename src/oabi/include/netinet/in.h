@@ -13,6 +13,7 @@
 
 #define INADDR_ANY   ((uint32_t)0)
 
+#define IP_MULTICAST_TTL  33
 #define IP_ADD_MEMBERSHIP 35
 
 struct in_addr {

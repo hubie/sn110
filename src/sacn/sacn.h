@@ -55,6 +55,12 @@ typedef struct {
 int sacn_init(uint16_t universe);
 
 /*
+ * Parse a raw sACN packet buffer into a sacn_packet_t.
+ * Returns 0 on success, -1 on invalid/malformed packet.
+ */
+int sacn_parse(const uint8_t *buf, int len, sacn_packet_t *pkt);
+
+/*
  * Receive and parse a single sACN packet.
  * Blocks until a packet is received or timeout.
  * Returns 0 on success, -1 on error/timeout.

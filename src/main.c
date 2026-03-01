@@ -22,6 +22,7 @@
 #include "common.h"
 #include "dmx/dmx.h"
 #include "sacn/sacn.h"
+#include "sacn/sacn_tx.h"
 #include "artnet/artnet.h"
 #include "shownet/shownet.h"
 #include "config/config.h"
@@ -51,12 +52,17 @@
 /* ========================================================================= */
 
 static dmx_frame_t  g_dmx_out[DMX_MAX_PORTS];    /* Network → DMX output */
+static dmx_frame_t  g_dmx_in[DMX_MAX_PORTS];     /* DMX input → Network */
+static sacn_tx_t    g_sacn_tx[DMX_MAX_PORTS];     /* sACN transmitters for RX ports */
+static int          g_sacn_tx_active[DMX_MAX_PORTS]; /* 1 if sacn_tx initialized */
+static uint32_t     g_dmx_in_last_send[DMX_MAX_PORTS]; /* Last sACN TX timestamp */
 static volatile int    g_running = 1;
 static node_config_t   g_config;
 static uint32_t g_sacn_rx_count = 0;
 static uint32_t g_artnet_rx_count = 0;
 static uint32_t g_shownet_rx_count = 0;
 static uint32_t g_dmx_tx_count = 0;
+static uint32_t g_sacn_tx_count = 0;
 
 /* ========================================================================= */
 /* Timestamp helper                                                          */
@@ -210,6 +216,63 @@ static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
 }
 
 /* ========================================================================= */
+/* DMX input — read hardware ports and send sACN                             */
+/* ========================================================================= */
+
+#define SACN_KEEPALIVE_MS 900  /* Re-send if no change within 900ms */
+
+static void dmx_input_cycle(const dmx_ops_t *ops, int *fds)
+{
+    uint32_t t = now_ms();
+    uint8_t frame[DMX_UNIVERSE_SIZE];
+    int i, n;
+
+    for (i = 0; i < DMX_MAX_PORTS; i++) {
+        if (fds[i] < 0)
+            continue;
+        if (g_config.ports[i].mode != DMX_MODE_RX)
+            continue;
+        if (!g_sacn_tx_active[i])
+            continue;
+
+        /* Non-blocking read from DMX port */
+        n = ops->read_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
+        if (n <= 0) {
+            g_dmx_in_zero_count++;
+            /* No data available — check keep-alive */
+            if (g_dmx_in[i].length > 0 &&
+                (t - g_dmx_in_last_send[i]) > SACN_KEEPALIVE_MS) {
+                /* Re-send last data as keep-alive */
+                if (sacn_tx_send(&g_sacn_tx[i], g_dmx_in[i].data,
+                                 g_dmx_in[i].length) == 0) {
+                    g_dmx_in_last_send[i] = t;
+                    g_sacn_tx_count++;
+                }
+            }
+            continue;
+        }
+
+        /* Check if data changed or keep-alive needed */
+        if (n == g_dmx_in[i].length &&
+            memcmp(frame, g_dmx_in[i].data, n) == 0 &&
+            (t - g_dmx_in_last_send[i]) < SACN_KEEPALIVE_MS) {
+            continue; /* Same data, no keep-alive needed yet */
+        }
+
+        /* Update stored frame */
+        memcpy(g_dmx_in[i].data, frame, n);
+        g_dmx_in[i].length = n;
+        g_dmx_in[i].last_update_ms = t;
+
+        /* Send sACN */
+        if (sacn_tx_send(&g_sacn_tx[i], frame, n) == 0) {
+            g_dmx_in_last_send[i] = t;
+            g_sacn_tx_count++;
+        }
+    }
+}
+
+/* ========================================================================= */
 /* Main — single-threaded event loop                                         */
 /* ========================================================================= */
 
@@ -238,11 +301,17 @@ int main(int argc, char *argv[])
     LOG("Protocol: %s", g_config.active_protocol == PROTO_SACN ? "sACN" :
         g_config.active_protocol == PROTO_ARTNET ? "Art-Net" :
         g_config.active_protocol == PROTO_SHOWNET ? "ShowNet" : "none");
-    LOG("Port 0: universe %d", g_config.ports[0].universe);
-    LOG("Port 1: universe %d", g_config.ports[1].universe);
+    for (i = 0; i < DMX_MAX_PORTS; i++) {
+        const char *mode_str = g_config.ports[i].mode == DMX_MODE_TX ? "TX" :
+                               g_config.ports[i].mode == DMX_MODE_RX ? "RX" : "OFF";
+        LOG("Port %d: universe %d, mode %s", i, g_config.ports[i].universe, mode_str);
+    }
 
     /* Initialize shared state */
     memset(g_dmx_out, 0, sizeof(g_dmx_out));
+    memset(g_dmx_in, 0, sizeof(g_dmx_in));
+    memset(g_sacn_tx_active, 0, sizeof(g_sacn_tx_active));
+    memset(g_dmx_in_last_send, 0, sizeof(g_dmx_in_last_send));
 
     /* Install signal handlers for clean shutdown */
     signal(SIGTERM, signal_handler);
@@ -272,12 +341,31 @@ int main(int argc, char *argv[])
     ops = dmx_get_ops();
     for (i = 0; i < DMX_MAX_PORTS; i++) {
         const char *dev = (i == 0) ? DMX_DEVICE_0 : DMX_DEVICE_1;
+        int port_mode = g_config.ports[i].mode;
+
+        if (port_mode == DMX_MODE_OFF) {
+            dmx_fds[i] = -1;
+            continue;
+        }
+
         dmx_fds[i] = ops->open(dev);
         if (dmx_fds[i] < 0) {
             LOG("WARNING: cannot open %s", dev);
             continue;
         }
-        ops->set_mode(dmx_fds[i], DMX_MODE_TX);
+        ops->set_mode(dmx_fds[i], port_mode);
+
+        /* Initialize sACN transmitter for RX-mode ports */
+        if (port_mode == DMX_MODE_RX) {
+            char src_name[64];
+            snprintf(src_name, sizeof(src_name), "SN110 Port %d", i);
+            if (sacn_tx_init(&g_sacn_tx[i], g_config.ports[i].universe,
+                             src_name) == 0) {
+                g_sacn_tx_active[i] = 1;
+            } else {
+                LOG("WARNING: sacn_tx_init failed for port %d", i);
+            }
+        }
     }
 
     LOG("Running. Send SIGTERM to stop.");
@@ -334,6 +422,9 @@ int main(int argc, char *argv[])
 
         /* Write DMX output each cycle */
         dmx_output_cycle(ops, dmx_fds, dmx_last_write);
+
+        /* Read DMX input and send sACN each cycle */
+        dmx_input_cycle(ops, dmx_fds);
     }
 
     /* Shutdown */
@@ -343,8 +434,12 @@ int main(int argc, char *argv[])
     if (artnet_sock >= 0) artnet_cleanup(artnet_sock);
     if (shownet_sock >= 0) shownet_cleanup(shownet_sock);
 
-    for (i = 0; i < DMX_MAX_PORTS; i++)
-        if (dmx_fds[i] >= 0) ops->close(dmx_fds[i]);
+    for (i = 0; i < DMX_MAX_PORTS; i++) {
+        if (g_sacn_tx_active[i])
+            sacn_tx_cleanup(&g_sacn_tx[i]);
+        if (dmx_fds[i] >= 0)
+            ops->close(dmx_fds[i]);
+    }
 
 #ifndef HOST_BUILD
     remove_pid_file();

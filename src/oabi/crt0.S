@@ -33,7 +33,12 @@ _start:
 .Lgot_pc:
     add     sl, pc, sl
 
-    /* argc is already in r0, argv in r1 from the kernel */
+    /* argc is already in r0, argv in r1, envp in r2 from the kernel */
+
+    /* Store envp (r2) into global 'environ' via GOT */
+    ldr     r3, .Lgot_environ
+    ldr     r3, [sl, r3]        /* r3 = &environ (from GOT) */
+    str     r2, [r3]            /* environ = envp */
 
     /* Align stack to 8 bytes (AAPCS requirement) */
     bic     sp, sp, #7
@@ -50,6 +55,8 @@ _start:
     .align 2
 .Lgot_off:
     .word   _GLOBAL_OFFSET_TABLE_ - (.Lgot_pc + 8)
+.Lgot_environ:
+    .word   environ(GOT)
 
     .size _start, . - _start
 

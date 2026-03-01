@@ -29,7 +29,7 @@ OABI_CFLAGS = -Wall -Wextra -Os -g \
     -static -no-pie
 OABI_SRCS = src/oabi/crt0.S src/oabi/syscalls.S \
     src/oabi/minilib.c src/oabi/minisock.c src/oabi/minithread.c \
-    src/main.c src/sacn/sacn.c src/artnet/artnet.c src/shownet/shownet.c \
+    src/main.c src/sacn/sacn.c src/sacn/sacn_tx.c src/artnet/artnet.c src/shownet/shownet.c \
     src/dmx/dmx_real.c src/config/config.c
 
 # For host-based testing (macOS/Linux native)
@@ -54,7 +54,7 @@ SRCS = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.c))
 OBJS = $(SRCS:.c=.o)
 
 # Host test sources (everything except main.c)
-LIB_SRCS = src/sacn/sacn.c src/artnet/artnet.c src/shownet/shownet.c \
+LIB_SRCS = src/sacn/sacn.c src/sacn/sacn_tx.c src/artnet/artnet.c src/shownet/shownet.c \
            src/dmx/dmx_mock.c src/dmx/dmx_real.c src/config/config.c
 TEST_SRCS = tests/test_basics.c $(LIB_SRCS)
 
@@ -71,7 +71,11 @@ DOCKER_RUN = docker run --rm -v $(shell pwd):/project $(DOCKER_IMAGE)
 # Build Targets
 # ==============================================================================
 
-.PHONY: all clean test arm-test oabi-daemon bflt docker-build docker-test docker-shell docker-bflt help
+# CGI binary sources (no minisock/minithread needed)
+CGI_SRCS = src/oabi/crt0.S src/oabi/syscalls.S \
+    src/oabi/minilib.c src/config/config.c src/cgi/cgi_config.c
+
+.PHONY: all clean test arm-test oabi-daemon bflt oabi-cgi cgi-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt deploy-web help
 
 all: $(TARGET_BFLT)
 	@echo "Built $(TARGET_BFLT) ($$(wc -c < $(TARGET_BFLT)) bytes)"
@@ -160,6 +164,30 @@ bflt: build/sn110dmx.bflt
 build/sn110dmx.bflt: build/sn110dmx_reloc.elf tools/elf2bflt.py
 	python3 tools/elf2bflt.py $< $@
 
+# ==============================================================================
+# CGI Binary (OABI — for web configuration interface)
+# ==============================================================================
+
+oabi-cgi: build/cgi_config_oabi
+
+build/cgi_config_oabi: $(CGI_SRCS) | build
+	$(ARM_CC) $(OABI_CFLAGS) -o $@ $(CGI_SRCS) $(LIBGCC)
+	@SIZE=$$(wc -c < $@); \
+	echo "CGI OABI ELF size: $$SIZE bytes"
+
+build/cgi_config_reloc.elf: $(CGI_SRCS) src/oabi/flat.ld | build
+	$(ARM_CC) $(OABI_CFLAGS) \
+		-T src/oabi/flat.ld \
+		-Wl,--emit-relocs,--build-id=none \
+		-o $@ $(CGI_SRCS) $(LIBGCC)
+
+cgi-bflt: build/cgi_config.bflt
+
+build/cgi_config.bflt: build/cgi_config_reloc.elf tools/elf2bflt.py
+	python3 tools/elf2bflt.py $< $@
+	@SIZE=$$(wc -c < $@); \
+	echo "CGI bFLT size: $$SIZE bytes"
+
 # Minimal test bFLT (hello world — for verifying bFLT format)
 build/hello_device.bflt: tests/hello_device.c src/oabi/crt0.S src/oabi/flat.ld tools/elf2bflt.py | build
 	$(ARM_CC) $(OABI_CFLAGS) \
@@ -184,6 +212,9 @@ docker-oabi: docker-build
 docker-bflt: docker-build
 	$(DOCKER_RUN) make bflt
 
+docker-cgi-bflt: docker-build
+	$(DOCKER_RUN) make cgi-bflt
+
 docker-shell: docker-build
 	docker run --rm -it -v $(shell pwd):/project $(DOCKER_IMAGE) bash
 
@@ -201,6 +232,9 @@ deploy-ram: $(TARGET_BFLT)
 	@echo "To stop the existing daemon first:"
 	@echo "  # Find PID of lxnetdmx and kill it"
 	@echo "  ps"
+
+deploy-web: build/cgi_config.bflt
+	python3 tools/deploy_web.py $(IP)
 
 deploy-flash: $(TARGET_BFLT)
 	@echo "⚠️  WARNING: This will permanently modify the device firmware!"

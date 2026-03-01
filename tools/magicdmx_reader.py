@@ -66,12 +66,13 @@ def try_read_dmx(devices):
         print(f"\nTrying interface {iface}...")
         
         try:
-            h = hid.Device(path=dev_info['path'])
+            h = hid.device()
+            h.open_path(dev_info['path'])
         except Exception as e:
             print(f"  Cannot open: {e}")
             continue
         
-        print(f"  Opened: {h.manufacturer} {h.product}")
+        print(f"  Opened: {h.get_manufacturer_string()} {h.get_product_string()}")
         
         # Try to set the device to DMX input mode
         # MagicDMX protocol: send a control report to configure mode
@@ -85,7 +86,7 @@ def try_read_dmx(devices):
         print("  Reading HID reports (5 second window)...")
         print("  (Send DMX data to the MagicDMX's input port to see values)")
         
-        h.nonblocking = True
+        h.set_nonblocking(True)
         start = time.time()
         report_count = 0
         dmx_data = [0] * 512
@@ -161,7 +162,8 @@ def monitor_mode(devices):
     # Use first available interface
     for dev_info in devices:
         try:
-            h = hid.Device(path=dev_info['path'])
+            h = hid.device()
+            h.open_path(dev_info['path'])
             break
         except:
             continue
@@ -169,10 +171,10 @@ def monitor_mode(devices):
         print("Cannot open any MagicDMX interface")
         return
     
-    print(f"\nMonitoring DMX from {h.manufacturer} {h.product}")
+    print(f"\nMonitoring DMX from {h.get_manufacturer_string()} {h.get_product_string()}")
     print("Press Ctrl+C to stop\n")
     
-    h.nonblocking = True
+    h.set_nonblocking(True)
     last_print = 0
     
     try:

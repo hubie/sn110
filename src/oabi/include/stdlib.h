@@ -10,5 +10,6 @@ int   atoi(const char *s);
 void *malloc(size_t size);
 void  free(void *ptr);
 void  exit(int status) __attribute__((noreturn));
+char *getenv(const char *name);
 
 #endif

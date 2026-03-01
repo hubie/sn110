@@ -35,4 +35,11 @@ int config_save(const char *path, const node_config_t *config);
  */
 void config_defaults(node_config_t *config);
 
+/*
+ * Parsing helpers — also used by CGI form parser.
+ */
+uint32_t parse_ip(const char *str);
+int parse_mode(const char *str);
+int parse_protocol(const char *str);
+
 #endif /* SN110_CONFIG_H */

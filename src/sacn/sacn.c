@@ -14,6 +14,7 @@
  */
 
 #include "sacn.h"
+#include "sacn_internal.h"
 #include "../common.h"
 
 #include <sys/types.h>
@@ -30,46 +31,6 @@
 #else
 #define LOG(fmt, ...) dprintf(2, "sacn: " fmt "\n", ##__VA_ARGS__)
 #endif
-
-/* sACN packet offsets (E1.31-2016 Table 4-1 through 4-3) */
-#define OFF_PREAMBLE        0
-#define OFF_POSTAMBLE       2
-#define OFF_ACN_ID          4
-#define OFF_ROOT_FLAGS_LEN  16
-#define OFF_ROOT_VECTOR     18
-#define OFF_CID             22
-
-#define OFF_FRAME_FLAGS_LEN 38
-#define OFF_FRAME_VECTOR    40
-#define OFF_SOURCE_NAME     44
-#define OFF_PRIORITY        108
-#define OFF_SYNC_ADDR       109
-#define OFF_SEQUENCE        111
-#define OFF_OPTIONS          112
-#define OFF_UNIVERSE        113
-
-#define OFF_DMP_FLAGS_LEN   115
-#define OFF_DMP_VECTOR      117
-#define OFF_DMP_ADDR_DATA   118
-#define OFF_DMP_FIRST_ADDR  119
-#define OFF_DMP_ADDR_INC    121
-#define OFF_DMP_PROP_COUNT  123
-#define OFF_DMP_START_CODE  125
-#define OFF_DMP_DMX_DATA    126
-
-#define SACN_MIN_PACKET_LEN 126
-
-/* Network byte order helpers for potentially-unaligned reads */
-static uint16_t read_u16_be(const uint8_t *p)
-{
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-
-static uint32_t read_u32_be(const uint8_t *p)
-{
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
-           ((uint32_t)p[2] << 8)  | (uint32_t)p[3];
-}
 
 uint32_t sacn_multicast_addr(uint16_t universe)
 {
@@ -121,15 +82,12 @@ int sacn_init(uint16_t universe)
     return sock;
 }
 
-int sacn_receive(int sock_fd, sacn_packet_t *pkt)
+int sacn_parse(const uint8_t *buf, int len, sacn_packet_t *pkt)
 {
-    uint8_t buf[638]; /* max sACN packet = 638 bytes */
-    int n;
     uint16_t preamble, universe, prop_count, dmx_len;
     uint32_t root_vector;
 
-    n = recv(sock_fd, buf, sizeof(buf), 0);
-    if (n < SACN_MIN_PACKET_LEN)
+    if (len < SACN_MIN_PACKET_LEN)
         return -1;
 
     /* Validate preamble */
@@ -173,13 +131,25 @@ int sacn_receive(int sock_fd, sacn_packet_t *pkt)
     if (dmx_len > DMX_UNIVERSE_SIZE)
         dmx_len = DMX_UNIVERSE_SIZE;
 
-    if (OFF_DMP_DMX_DATA + dmx_len > (uint16_t)n)
-        dmx_len = n - OFF_DMP_DMX_DATA;
+    if (OFF_DMP_DMX_DATA + dmx_len > (uint16_t)len)
+        dmx_len = len - OFF_DMP_DMX_DATA;
 
     memcpy(pkt->dmx_data, buf + OFF_DMP_DMX_DATA, dmx_len);
     pkt->dmx_length = dmx_len;
 
     return 0;
+}
+
+int sacn_receive(int sock_fd, sacn_packet_t *pkt)
+{
+    uint8_t buf[SACN_MAX_PACKET_LEN];
+    int n;
+
+    n = recv(sock_fd, buf, sizeof(buf), 0);
+    if (n < SACN_MIN_PACKET_LEN)
+        return -1;
+
+    return sacn_parse(buf, n, pkt);
 }
 
 void sacn_cleanup(int sock_fd)

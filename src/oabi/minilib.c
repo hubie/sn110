@@ -130,6 +130,29 @@ char *strchr(const char *s, int c)
 }
 
 /* ================================================================== */
+/* Environment variables                                               */
+/* ================================================================== */
+
+/* Set by crt0.S from kernel envp register */
+char **environ;
+
+char *getenv(const char *name)
+{
+    char **env;
+    size_t len;
+
+    if (!environ || !name)
+        return NULL;
+
+    len = strlen(name);
+    for (env = environ; *env; env++) {
+        if (strncmp(*env, name, len) == 0 && (*env)[len] == '=')
+            return &(*env)[len + 1];
+    }
+    return NULL;
+}
+
+/* ================================================================== */
 /* Number conversion                                                   */
 /* ================================================================== */
 

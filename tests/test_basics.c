@@ -17,9 +17,11 @@
 #include "../src/common.h"
 #include "../src/dmx/dmx.h"
 #include "../src/sacn/sacn.h"
+#include "../src/sacn/sacn_tx.h"
 #include "../src/artnet/artnet.h"
 #include "../src/shownet/shownet.h"
 #include "../src/config/config.h"
+#include "../src/cgi/cgi_parse.h"
 
 /* Mock DMX test helpers (from dmx_mock.c) */
 extern const uint8_t *mock_dmx_get_tx_buf(int fd);
@@ -304,6 +306,263 @@ static void test_config_save_load(void) {
 }
 
 /* ========================================================================= */
+/* sACN TX tests                                                             */
+/* ========================================================================= */
+
+static void test_sacn_tx_build_packet(void) {
+    sacn_tx_t tx;
+    uint8_t buf[638];
+    uint8_t dmx[512];
+    int pkt_len;
+    int i;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.universe = 1;
+    tx.priority = 100;
+    tx.sequence = 42;
+    strncpy(tx.source_name, "TestSource", sizeof(tx.source_name));
+    memset(tx.cid, 0xAA, 16);
+
+    /* Set up test DMX data: identify pattern */
+    memset(dmx, 0, sizeof(dmx));
+    dmx[0] = 255;
+    dmx[1] = 128;
+    dmx[2] = 64;
+
+    pkt_len = sacn_tx_build_packet(&tx, dmx, 512, buf, sizeof(buf));
+    assert(pkt_len == 638);
+
+    /* Verify preamble */
+    assert(buf[0] == 0x00 && buf[1] == 0x10); /* preamble = 0x0010 */
+    assert(buf[2] == 0x00 && buf[3] == 0x00); /* postamble = 0 */
+
+    /* Verify ACN identifier */
+    assert(buf[4] == 'A' && buf[5] == 'S' && buf[6] == 'C');
+
+    /* Verify root vector = 0x00000004 */
+    assert(buf[18] == 0x00 && buf[19] == 0x00);
+    assert(buf[20] == 0x00 && buf[21] == 0x04);
+
+    /* Verify CID */
+    for (i = 0; i < 16; i++)
+        assert(buf[22 + i] == 0xAA);
+
+    /* Verify framing vector = 0x00000002 */
+    assert(buf[40] == 0x00 && buf[41] == 0x00);
+    assert(buf[42] == 0x00 && buf[43] == 0x02);
+
+    /* Verify source name starts with "TestSource" */
+    assert(memcmp(buf + 44, "TestSource", 10) == 0);
+
+    /* Verify priority */
+    assert(buf[108] == 100);
+
+    /* Verify sequence */
+    assert(buf[111] == 42);
+
+    /* Verify universe = 1 */
+    assert(buf[113] == 0x00 && buf[114] == 0x01);
+
+    /* Verify DMP vector */
+    assert(buf[117] == 0x02);
+
+    /* Verify DMX start code = 0 */
+    assert(buf[125] == 0x00);
+
+    /* Verify DMX data at known offsets */
+    assert(buf[126] == 255);  /* Ch1 */
+    assert(buf[127] == 128);  /* Ch2 */
+    assert(buf[128] == 64);   /* Ch3 */
+    assert(buf[129] == 0);    /* Ch4 */
+}
+
+static void test_sacn_tx_roundtrip(void) {
+    sacn_tx_t tx;
+    sacn_packet_t parsed;
+    uint8_t buf[638];
+    uint8_t dmx[512];
+    int pkt_len;
+    int i;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.universe = 7;
+    tx.priority = 150;
+    tx.sequence = 99;
+    strncpy(tx.source_name, "RoundtripTest", sizeof(tx.source_name));
+    memset(tx.cid, 0xBB, 16);
+
+    /* Ramp pattern */
+    for (i = 0; i < 512; i++)
+        dmx[i] = i & 0xFF;
+
+    pkt_len = sacn_tx_build_packet(&tx, dmx, 512, buf, sizeof(buf));
+    assert(pkt_len == 638);
+
+    /* Parse it back */
+    assert(sacn_parse(buf, pkt_len, &parsed) == 0);
+
+    /* Verify all fields round-trip */
+    assert(parsed.universe == 7);
+    assert(parsed.priority == 150);
+    assert(parsed.sequence == 99);
+    assert(parsed.start_code == 0);
+    assert(parsed.dmx_length == 512);
+    assert(strcmp(parsed.source_name, "RoundtripTest") == 0);
+
+    /* Verify CID */
+    for (i = 0; i < 16; i++)
+        assert(parsed.cid[i] == 0xBB);
+
+    /* Verify DMX data */
+    for (i = 0; i < 512; i++)
+        assert(parsed.dmx_data[i] == (i & 0xFF));
+}
+
+/* ========================================================================= */
+/* Config port mode tests                                                    */
+/* ========================================================================= */
+
+static void test_config_port_mode_rx(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_mode.cfg";
+    FILE *f;
+
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f, "DMX_PORT0_MODE=rx\n");
+    fprintf(f, "DMX_PORT1_MODE=tx\n");
+    fclose(f);
+
+    assert(config_load(path, &config) == 0);
+    assert(config.ports[0].mode == DMX_MODE_RX);
+    assert(config.ports[1].mode == DMX_MODE_TX);
+
+    remove(path);
+}
+
+static void test_config_save_load_mode(void) {
+    node_config_t orig, loaded;
+    const char *path = "/tmp/sn110_test_mode2.cfg";
+
+    config_defaults(&orig);
+    orig.ports[0].mode = DMX_MODE_RX;
+    orig.ports[1].mode = DMX_MODE_OFF;
+
+    assert(config_save(path, &orig) == 0);
+    assert(config_load(path, &loaded) == 0);
+    assert(loaded.ports[0].mode == DMX_MODE_RX);
+    assert(loaded.ports[1].mode == DMX_MODE_OFF);
+
+    remove(path);
+}
+
+/* ========================================================================= */
+/* DMX input → sACN pipeline test                                            */
+/* ========================================================================= */
+
+static void test_dmx_input_to_sacn(void) {
+    sacn_tx_t tx;
+    sacn_packet_t parsed;
+    uint8_t buf[638];
+    uint8_t dmx_in[512];
+    int pkt_len;
+
+    /* Simulate: DMX port reads identify pattern */
+    memset(dmx_in, 0, sizeof(dmx_in));
+    dmx_in[0] = 255;
+    dmx_in[1] = 128;
+    dmx_in[2] = 64;
+
+    /* Build sACN packet from DMX input (as dmx_input_cycle would) */
+    memset(&tx, 0, sizeof(tx));
+    tx.universe = 1;
+    tx.priority = 100;
+    tx.sequence = 0;
+    strncpy(tx.source_name, "SN110 Port 0", sizeof(tx.source_name));
+    memset(tx.cid, 0x53, 16);
+
+    pkt_len = sacn_tx_build_packet(&tx, dmx_in, 512, buf, sizeof(buf));
+    assert(pkt_len == 638);
+
+    /* Parse and verify DMX data survived the pipeline */
+    assert(sacn_parse(buf, pkt_len, &parsed) == 0);
+    assert(parsed.universe == 1);
+    assert(parsed.dmx_data[0] == 255);
+    assert(parsed.dmx_data[1] == 128);
+    assert(parsed.dmx_data[2] == 64);
+    assert(parsed.dmx_data[3] == 0);
+    assert(parsed.dmx_length == 512);
+}
+
+/* ========================================================================= */
+/* CGI parsing tests                                                         */
+/* ========================================================================= */
+
+static void test_cgi_url_decode(void) {
+    char out[64];
+
+    /* %20 → space */
+    url_decode(out, "hello%20world", sizeof(out));
+    assert(strcmp(out, "hello world") == 0);
+
+    /* + → space */
+    url_decode(out, "hello+world", sizeof(out));
+    assert(strcmp(out, "hello world") == 0);
+
+    /* %2F → / */
+    url_decode(out, "path%2Fto%2Ffile", sizeof(out));
+    assert(strcmp(out, "path/to/file") == 0);
+
+    /* Plain passthrough */
+    url_decode(out, "plain_text", sizeof(out));
+    assert(strcmp(out, "plain_text") == 0);
+
+    /* Mixed */
+    url_decode(out, "a%26b%3Dc", sizeof(out));
+    assert(strcmp(out, "a&b=c") == 0);
+
+    /* Empty string */
+    url_decode(out, "", sizeof(out));
+    assert(strcmp(out, "") == 0);
+}
+
+static void test_cgi_parse_formdata(void) {
+    node_config_t cfg;
+    config_defaults(&cfg);
+
+    parse_formdata("hostname=sn110&port0_mode=rx&port0_universe=3"
+                   "&port1_mode=off&port1_universe=7"
+                   "&protocol=artnet&dmx_hold_time=15"
+                   "&port0_label=Stage&port1_label=Truss",
+                   &cfg);
+
+    assert(strcmp(cfg.hostname, "sn110") == 0);
+    assert(cfg.ports[0].mode == DMX_MODE_RX);
+    assert(cfg.ports[0].universe == 3);
+    assert(cfg.ports[1].mode == DMX_MODE_OFF);
+    assert(cfg.ports[1].universe == 7);
+    assert(cfg.active_protocol == PROTO_ARTNET);
+    assert(cfg.dmx_hold_time == 15);
+    assert(strcmp(cfg.ports[0].label, "Stage") == 0);
+    assert(strcmp(cfg.ports[1].label, "Truss") == 0);
+}
+
+static void test_cgi_parse_formdata_special_chars(void) {
+    node_config_t cfg;
+    config_defaults(&cfg);
+
+    /* URL-encoded values: "SN 110" → hostname, "10.0.1.50" → ipaddr */
+    parse_formdata("hostname=SN%20110&ipaddr=10.0.1.50"
+                   "&netmask=255.255.255.0&gateway=10.0.1.1",
+                   &cfg);
+
+    assert(strcmp(cfg.hostname, "SN 110") == 0);
+    assert(cfg.ip_addr == ((10 << 24) | (0 << 16) | (1 << 8) | 50));
+    assert(cfg.netmask == ((255u << 24) | (255u << 16) | (255u << 8) | 0u));
+    assert(cfg.gateway == ((10 << 24) | (0 << 16) | (1 << 8) | 1));
+}
+
+/* ========================================================================= */
 /* Main                                                                      */
 /* ========================================================================= */
 
@@ -340,6 +599,20 @@ int main(void) {
     printf("\nConfig:\n");
     TEST(config_defaults_values);
     TEST(config_save_load);
+    TEST(config_port_mode_rx);
+    TEST(config_save_load_mode);
+
+    printf("\nsACN TX:\n");
+    TEST(sacn_tx_build_packet);
+    TEST(sacn_tx_roundtrip);
+
+    printf("\nDMX Input Pipeline:\n");
+    TEST(dmx_input_to_sacn);
+
+    printf("\nCGI Parsing:\n");
+    TEST(cgi_url_decode);
+    TEST(cgi_parse_formdata);
+    TEST(cgi_parse_formdata_special_chars);
 
     printf("\n================================\n");
     printf("Results: %d/%d tests passed\n", tests_passed, tests_run);

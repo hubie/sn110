@@ -50,7 +50,7 @@ void config_defaults(node_config_t *config)
     config->ports[1].universe = 2;
 }
 
-static uint32_t parse_ip(const char *str)
+uint32_t parse_ip(const char *str)
 {
     unsigned int a, b, c, d;
     if (sscanf(str, "%u.%u.%u.%u", &a, &b, &c, &d) == 4)
@@ -58,7 +58,18 @@ static uint32_t parse_ip(const char *str)
     return 0;
 }
 
-static int parse_protocol(const char *str)
+int parse_mode(const char *str)
+{
+    if (strcmp(str, "tx") == 0 || strcmp(str, "TX") == 0)
+        return DMX_MODE_TX;
+    if (strcmp(str, "rx") == 0 || strcmp(str, "RX") == 0)
+        return DMX_MODE_RX;
+    if (strcmp(str, "off") == 0 || strcmp(str, "OFF") == 0)
+        return DMX_MODE_OFF;
+    return DMX_MODE_TX; /* default to TX for backward compatibility */
+}
+
+int parse_protocol(const char *str)
 {
     if (strcmp(str, "sacn") == 0 || strcmp(str, "sACN") == 0)
         return PROTO_SACN;
@@ -109,6 +120,10 @@ int config_load(const char *path, node_config_t *config)
             config->ports[0].universe = atoi(value);
         else if (strcmp(key, "ARTNET_UNIVERSE_1") == 0)
             config->ports[1].universe = atoi(value);
+        else if (strcmp(key, "DMX_PORT0_MODE") == 0)
+            config->ports[0].mode = parse_mode(value);
+        else if (strcmp(key, "DMX_PORT1_MODE") == 0)
+            config->ports[1].mode = parse_mode(value);
         else if (strcmp(key, "DMX_PORT0_LABEL") == 0)
             strncpy(config->ports[0].label, value, 8);
         else if (strcmp(key, "DMX_PORT1_LABEL") == 0)
@@ -117,6 +132,16 @@ int config_load(const char *path, node_config_t *config)
 
     fclose(f);
     return 0;
+}
+
+static const char *mode_name(int mode)
+{
+    switch (mode) {
+    case DMX_MODE_TX:  return "tx";
+    case DMX_MODE_RX:  return "rx";
+    case DMX_MODE_OFF: return "off";
+    default:           return "tx";
+    }
 }
 
 static const char *protocol_name(int proto)
@@ -154,6 +179,9 @@ int config_save(const char *path, const node_config_t *config)
     fprintf(f, "\n# Universe mapping (1-based for sACN, 15-bit for Art-Net)\n");
     fprintf(f, "SACN_UNIVERSE_0=%d\n", config->ports[0].universe);
     fprintf(f, "SACN_UNIVERSE_1=%d\n", config->ports[1].universe);
+    fprintf(f, "\n# Port modes: tx, rx, off\n");
+    fprintf(f, "DMX_PORT0_MODE=%s\n", mode_name(config->ports[0].mode));
+    fprintf(f, "DMX_PORT1_MODE=%s\n", mode_name(config->ports[1].mode));
     fprintf(f, "\n# Port labels (up to 8 characters)\n");
     fprintf(f, "DMX_PORT0_LABEL=%s\n", config->ports[0].label);
     fprintf(f, "DMX_PORT1_LABEL=%s\n", config->ports[1].label);
