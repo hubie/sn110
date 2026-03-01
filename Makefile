@@ -226,11 +226,13 @@ backup:
 	@echo "Backing up device at $(IP) to dump/firmware/..."
 	tools/backup.sh $(IP)
 
+deploy:
+	@echo "Deploying open firmware to $(IP)..."
+	./tools/install.sh $(IP)
+
 restore:
-	@echo "Restoring original lxnetdmx to $(IP)..."
-	curl -T dump/firmware/usr/bin/lxnetdmx -u $(FTP_USER):$(FTP_PASS) \
-		ftp://$(IP)/usr/bin/lxnetdmx
-	@echo "Restored. Reboot the device or telnet in and restart lxnetdmx."
+	@echo "Restoring original firmware to $(IP)..."
+	./tools/restore.sh $(IP)
 
 # ==============================================================================
 # Cleanup

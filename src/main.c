@@ -6,11 +6,14 @@
  *   - Art-Net — widely-used DMX over IP
  *   - ShowNet — legacy Strand protocol compatibility
  *
- * Architecture (mirrors original lxnetdmx 4-thread design):
- *   Thread 1: Network receiver — listens for protocol packets
- *   Thread 2: DMX output — writes received data to /dev/dmxN
- *   Thread 3: DMX input — reads from /dev/dmxN (future: for DMX IN ports)
- *   Thread 4: Housekeeping — timeout detection, LCD updates
+ * Architecture: single-threaded event loop
+ *   1. select() on network sockets with 23ms timeout
+ *   2. Process any received protocol packets → update DMX buffers
+ *   3. Write fresh DMX data to /dev/dmxN hardware
+ *   4. Check for source timeouts → zero DMX on timeout
+ *
+ * The ~23ms cycle gives ~44Hz DMX refresh rate, matching DMX512 spec.
+ * Single-threaded avoids clone() instability on uClinux/Linux 2.0.
  *
  * Copyright (c) 2026 SN110 Open Firmware Contributors
  * SPDX-License-Identifier: MIT
@@ -26,33 +29,34 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <fcntl.h>
+
+/* PID file path — matches what /etc/rc watchdog checks */
+#define PID_FILE "/var/run/lxnetdmx.pid"
 
 #ifdef HOST_BUILD
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
 #include <sys/time.h>
 #define LOG(fmt, ...) fprintf(stderr, "[sn110dmx] " fmt "\n", ##__VA_ARGS__)
 #else
-/*
- * uClinux/Linux 2.0 - pthreads via linuxthreads or clone()
- * The original lxnetdmx uses pthreads, so we know they work.
- */
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
 #include <sys/time.h>
 #define LOG(fmt, ...) dprintf(2, "[sn110dmx] " fmt "\n", ##__VA_ARGS__)
 #endif
 
 /* ========================================================================= */
-/* Global shared state (protected by mutex)                                  */
+/* Global state (single-threaded — no mutex needed)                          */
 /* ========================================================================= */
 
 static dmx_frame_t  g_dmx_out[DMX_MAX_PORTS];    /* Network → DMX output */
-static pthread_mutex_t g_dmx_mutex = PTHREAD_MUTEX_INITIALIZER;
 static volatile int    g_running = 1;
 static node_config_t   g_config;
+static uint32_t g_sacn_rx_count = 0;
+static uint32_t g_artnet_rx_count = 0;
+static uint32_t g_shownet_rx_count = 0;
+static uint32_t g_dmx_tx_count = 0;
 
 /* ========================================================================= */
 /* Timestamp helper                                                          */
@@ -75,13 +79,13 @@ static void handle_sacn_packet(const sacn_packet_t *pkt)
     if (pkt->start_code != 0)
         return; /* Only handle DMX start code 0 */
 
+    g_sacn_rx_count++;
+
     for (port = 0; port < DMX_MAX_PORTS; port++) {
         if (g_config.ports[port].universe != pkt->universe)
             continue;
         if (g_config.ports[port].mode != DMX_MODE_TX)
             continue;
-
-        pthread_mutex_lock(&g_dmx_mutex);
 
         /* Priority-based merging: higher priority wins */
         if (pkt->priority >= g_dmx_out[port].priority ||
@@ -92,8 +96,6 @@ static void handle_sacn_packet(const sacn_packet_t *pkt)
             g_dmx_out[port].sequence = pkt->sequence;
             g_dmx_out[port].last_update_ms = now_ms();
         }
-
-        pthread_mutex_unlock(&g_dmx_mutex);
     }
 }
 
@@ -106,12 +108,10 @@ static void handle_artnet_packet(const artnet_dmx_packet_t *pkt)
         if (g_config.ports[port].mode != DMX_MODE_TX)
             continue;
 
-        pthread_mutex_lock(&g_dmx_mutex);
         memcpy(g_dmx_out[port].data, pkt->dmx_data, pkt->dmx_length);
         g_dmx_out[port].length = pkt->dmx_length;
         g_dmx_out[port].sequence = pkt->sequence;
         g_dmx_out[port].last_update_ms = now_ms();
-        pthread_mutex_unlock(&g_dmx_mutex);
     }
 }
 
@@ -127,183 +127,10 @@ static void handle_shownet_packet(const shownet_packet_t *pkt)
         if (g_config.ports[port].mode != DMX_MODE_TX)
             continue;
 
-        pthread_mutex_lock(&g_dmx_mutex);
         memcpy(g_dmx_out[port].data, pkt->dmx_data, pkt->dmx_length);
         g_dmx_out[port].length = pkt->dmx_length;
         g_dmx_out[port].last_update_ms = now_ms();
-        pthread_mutex_unlock(&g_dmx_mutex);
     }
-}
-
-static void *thread_net_receive(void *arg)
-{
-    int sacn_socks[DMX_MAX_PORTS];
-    int artnet_sock = -1;
-    int shownet_sock = -1;
-    int i;
-    fd_set readfds;
-    int maxfd;
-    struct timeval tv;
-
-    (void)arg;
-
-    /* Initialize protocol sockets based on active protocol */
-    memset(sacn_socks, -1, sizeof(sacn_socks));
-
-    if (g_config.active_protocol == PROTO_SACN) {
-        for (i = 0; i < DMX_MAX_PORTS; i++) {
-            sacn_socks[i] = sacn_init(g_config.ports[i].universe);
-            if (sacn_socks[i] < 0)
-                LOG("WARNING: failed to init sACN for universe %d",
-                    g_config.ports[i].universe);
-        }
-    } else if (g_config.active_protocol == PROTO_ARTNET) {
-        artnet_sock = artnet_init();
-        if (artnet_sock < 0)
-            LOG("WARNING: failed to init Art-Net");
-    } else if (g_config.active_protocol == PROTO_SHOWNET) {
-        shownet_sock = shownet_init();
-        if (shownet_sock < 0)
-            LOG("WARNING: failed to init ShowNet");
-    }
-
-    while (g_running) {
-        FD_ZERO(&readfds);
-        maxfd = -1;
-
-        for (i = 0; i < DMX_MAX_PORTS; i++) {
-            if (sacn_socks[i] >= 0) {
-                FD_SET(sacn_socks[i], &readfds);
-                if (sacn_socks[i] > maxfd) maxfd = sacn_socks[i];
-            }
-        }
-        if (artnet_sock >= 0) {
-            FD_SET(artnet_sock, &readfds);
-            if (artnet_sock > maxfd) maxfd = artnet_sock;
-        }
-        if (shownet_sock >= 0) {
-            FD_SET(shownet_sock, &readfds);
-            if (shownet_sock > maxfd) maxfd = shownet_sock;
-        }
-
-        if (maxfd < 0) {
-            usleep(100000);
-            continue;
-        }
-
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-
-        if (select(maxfd + 1, &readfds, NULL, NULL, &tv) <= 0)
-            continue;
-
-        /* Handle sACN packets */
-        for (i = 0; i < DMX_MAX_PORTS; i++) {
-            if (sacn_socks[i] >= 0 && FD_ISSET(sacn_socks[i], &readfds)) {
-                sacn_packet_t sacn_pkt;
-                if (sacn_receive(sacn_socks[i], &sacn_pkt) == 0)
-                    handle_sacn_packet(&sacn_pkt);
-            }
-        }
-
-        /* Handle Art-Net packets */
-        if (artnet_sock >= 0 && FD_ISSET(artnet_sock, &readfds)) {
-            artnet_dmx_packet_t artnet_pkt;
-            if (artnet_receive(artnet_sock, &artnet_pkt) == 0)
-                handle_artnet_packet(&artnet_pkt);
-        }
-
-        /* Handle ShowNet packets */
-        if (shownet_sock >= 0 && FD_ISSET(shownet_sock, &readfds)) {
-            shownet_packet_t shownet_pkt;
-            if (shownet_receive(shownet_sock, &shownet_pkt) == 0)
-                handle_shownet_packet(&shownet_pkt);
-        }
-    }
-
-    /* Cleanup */
-    for (i = 0; i < DMX_MAX_PORTS; i++)
-        if (sacn_socks[i] >= 0) sacn_cleanup(sacn_socks[i]);
-    if (artnet_sock >= 0) artnet_cleanup(artnet_sock);
-    if (shownet_sock >= 0) shownet_cleanup(shownet_sock);
-
-    return NULL;
-}
-
-/* ========================================================================= */
-/* Thread 2: DMX output                                                      */
-/* ========================================================================= */
-
-static void *thread_dmx_output(void *arg)
-{
-    const dmx_ops_t *ops = dmx_get_ops();
-    int fds[DMX_MAX_PORTS];
-    int i;
-    uint32_t last_write[DMX_MAX_PORTS] = {0};
-    uint8_t frame[DMX_UNIVERSE_SIZE];
-
-    (void)arg;
-
-    /* Open and configure DMX ports */
-    for (i = 0; i < DMX_MAX_PORTS; i++) {
-        const char *dev = (i == 0) ? DMX_DEVICE_0 : DMX_DEVICE_1;
-        fds[i] = ops->open(dev);
-        if (fds[i] < 0) {
-            LOG("WARNING: cannot open %s", dev);
-            continue;
-        }
-        ops->set_mode(fds[i], DMX_MODE_TX);
-    }
-
-    while (g_running) {
-        uint32_t t = now_ms();
-
-        for (i = 0; i < DMX_MAX_PORTS; i++) {
-            if (fds[i] < 0)
-                continue;
-            if (g_config.ports[i].mode != DMX_MODE_TX)
-                continue;
-
-            pthread_mutex_lock(&g_dmx_mutex);
-
-            /* Check if we have fresh data */
-            if (g_dmx_out[i].last_update_ms > last_write[i]) {
-                memcpy(frame, g_dmx_out[i].data, DMX_UNIVERSE_SIZE);
-                last_write[i] = g_dmx_out[i].last_update_ms;
-                pthread_mutex_unlock(&g_dmx_mutex);
-
-                ops->write_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
-            } else {
-                /* Check for source timeout */
-                uint32_t age = t - g_dmx_out[i].last_update_ms;
-                int timed_out = (g_dmx_out[i].last_update_ms > 0) &&
-                                (age > (uint32_t)g_config.dmx_hold_time * 1000);
-
-                if (timed_out) {
-                    memset(g_dmx_out[i].data, 0, DMX_UNIVERSE_SIZE);
-                    g_dmx_out[i].last_update_ms = 0;
-                    g_dmx_out[i].priority = 0;
-                }
-                pthread_mutex_unlock(&g_dmx_mutex);
-
-                if (timed_out) {
-                    memset(frame, 0, DMX_UNIVERSE_SIZE);
-                    ops->write_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
-                }
-            }
-        }
-
-        /* ~44fps DMX output rate (roughly matching DMX512 refresh) */
-        usleep(23000);
-    }
-
-    /* Shutdown: turn off ports */
-    for (i = 0; i < DMX_MAX_PORTS; i++) {
-        if (fds[i] >= 0)
-            ops->close(fds[i]);
-    }
-
-    return NULL;
 }
 
 /* ========================================================================= */
@@ -312,20 +139,90 @@ static void *thread_dmx_output(void *arg)
 
 static void signal_handler(int sig)
 {
-    (void)sig;
-    g_running = 0;
+    if (sig == 15) /* SIGTERM */
+        g_running = 0;
 }
 
 /* ========================================================================= */
-/* Main                                                                      */
+/* PID file management                                                       */
+/* ========================================================================= */
+
+#ifndef HOST_BUILD
+static void write_pid_file(void)
+{
+    char buf[16];
+    int fd, n;
+    pid_t pid = getpid();
+
+    n = snprintf(buf, sizeof(buf), "%d\n", (int)pid);
+    fd = open(PID_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        write(fd, buf, n);
+        close(fd);
+    }
+}
+
+static void remove_pid_file(void)
+{
+    unlink(PID_FILE);
+}
+#endif
+
+/* ========================================================================= */
+/* DMX output — write fresh data to hardware ports                           */
+/* ========================================================================= */
+
+static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
+                             uint32_t *last_write)
+{
+    uint32_t t = now_ms();
+    uint8_t frame[DMX_UNIVERSE_SIZE];
+    int i;
+
+    for (i = 0; i < DMX_MAX_PORTS; i++) {
+        if (fds[i] < 0)
+            continue;
+        if (g_config.ports[i].mode != DMX_MODE_TX)
+            continue;
+
+        /* Check if we have fresh data */
+        if (g_dmx_out[i].last_update_ms > last_write[i]) {
+            memcpy(frame, g_dmx_out[i].data, DMX_UNIVERSE_SIZE);
+            last_write[i] = g_dmx_out[i].last_update_ms;
+
+            ops->write_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
+            g_dmx_tx_count++;
+        } else {
+            /* Check for source timeout */
+            uint32_t age = t - g_dmx_out[i].last_update_ms;
+            int timed_out = (g_dmx_out[i].last_update_ms > 0) &&
+                            (age > (uint32_t)g_config.dmx_hold_time * 1000);
+
+            if (timed_out) {
+                memset(g_dmx_out[i].data, 0, DMX_UNIVERSE_SIZE);
+                g_dmx_out[i].last_update_ms = 0;
+                g_dmx_out[i].priority = 0;
+                memset(frame, 0, DMX_UNIVERSE_SIZE);
+                ops->write_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
+            }
+        }
+    }
+}
+
+/* ========================================================================= */
+/* Main — single-threaded event loop                                         */
 /* ========================================================================= */
 
 int main(int argc, char *argv[])
 {
     const char *config_path = CONFIG_FILE_PATH;
-    pthread_t net_thread, dmx_thread;
+    const dmx_ops_t *ops;
+    int sacn_sock = -1, artnet_sock = -1, shownet_sock = -1;
+    int dmx_fds[DMX_MAX_PORTS];
+    uint32_t dmx_last_write[DMX_MAX_PORTS] = {0};
+    int i;
 
-    LOG("sn110dmx v0.1.0 — Open-source DMX gateway");
+    LOG("sn110dmx v0.2.0 — Open-source DMX gateway");
     LOG("Strand SN110 multi-protocol firmware");
 
     /* Parse optional config path argument */
@@ -350,24 +247,108 @@ int main(int argc, char *argv[])
     /* Install signal handlers for clean shutdown */
     signal(SIGTERM, signal_handler);
     signal(SIGINT, signal_handler);
+    signal(SIGPIPE, SIG_IGN); /* ignore broken pipe from stderr writes */
 
-    /* Create threads */
-    if (pthread_create(&net_thread, NULL, thread_net_receive, NULL) != 0) {
-        LOG("FATAL: cannot create network thread");
-        return 1;
+#ifndef HOST_BUILD
+    write_pid_file();
+#endif
+
+    /* Initialize protocol sockets */
+    if (g_config.active_protocol == PROTO_SACN) {
+        sacn_sock = sacn_init(g_config.ports[0].universe);
+        if (sacn_sock < 0)
+            LOG("WARNING: failed to init sACN socket");
+    } else if (g_config.active_protocol == PROTO_ARTNET) {
+        artnet_sock = artnet_init();
+        if (artnet_sock < 0)
+            LOG("WARNING: failed to init Art-Net");
+    } else if (g_config.active_protocol == PROTO_SHOWNET) {
+        shownet_sock = shownet_init();
+        if (shownet_sock < 0)
+            LOG("WARNING: failed to init ShowNet");
     }
-    if (pthread_create(&dmx_thread, NULL, thread_dmx_output, NULL) != 0) {
-        LOG("FATAL: cannot create DMX output thread");
-        g_running = 0;
-        pthread_join(net_thread, NULL);
-        return 1;
+
+    /* Open and configure DMX ports */
+    ops = dmx_get_ops();
+    for (i = 0; i < DMX_MAX_PORTS; i++) {
+        const char *dev = (i == 0) ? DMX_DEVICE_0 : DMX_DEVICE_1;
+        dmx_fds[i] = ops->open(dev);
+        if (dmx_fds[i] < 0) {
+            LOG("WARNING: cannot open %s", dev);
+            continue;
+        }
+        ops->set_mode(dmx_fds[i], DMX_MODE_TX);
     }
 
     LOG("Running. Send SIGTERM to stop.");
 
-    /* Main thread just waits */
-    pthread_join(net_thread, NULL);
-    pthread_join(dmx_thread, NULL);
+    /* ---- Main event loop ---- */
+    while (g_running) {
+        fd_set readfds;
+        int maxfd = -1;
+        struct timeval tv;
+
+        FD_ZERO(&readfds);
+
+        if (sacn_sock >= 0) {
+            FD_SET(sacn_sock, &readfds);
+            if (sacn_sock > maxfd) maxfd = sacn_sock;
+        }
+        if (artnet_sock >= 0) {
+            FD_SET(artnet_sock, &readfds);
+            if (artnet_sock > maxfd) maxfd = artnet_sock;
+        }
+        if (shownet_sock >= 0) {
+            FD_SET(shownet_sock, &readfds);
+            if (shownet_sock > maxfd) maxfd = shownet_sock;
+        }
+
+        /* 23ms timeout ≈ 44Hz DMX refresh rate */
+        tv.tv_sec = 0;
+        tv.tv_usec = 23000;
+
+        if (maxfd >= 0 && select(maxfd + 1, &readfds, NULL, NULL, &tv) > 0) {
+            /* Handle sACN packets */
+            if (sacn_sock >= 0 && FD_ISSET(sacn_sock, &readfds)) {
+                sacn_packet_t sacn_pkt;
+                if (sacn_receive(sacn_sock, &sacn_pkt) == 0)
+                    handle_sacn_packet(&sacn_pkt);
+            }
+
+            /* Handle Art-Net packets */
+            if (artnet_sock >= 0 && FD_ISSET(artnet_sock, &readfds)) {
+                artnet_dmx_packet_t artnet_pkt;
+                if (artnet_receive(artnet_sock, &artnet_pkt) == 0)
+                    handle_artnet_packet(&artnet_pkt);
+            }
+
+            /* Handle ShowNet packets */
+            if (shownet_sock >= 0 && FD_ISSET(shownet_sock, &readfds)) {
+                shownet_packet_t shownet_pkt;
+                if (shownet_receive(shownet_sock, &shownet_pkt) == 0)
+                    handle_shownet_packet(&shownet_pkt);
+            }
+        } else if (maxfd < 0) {
+            usleep(23000);
+        }
+
+        /* Write DMX output each cycle */
+        dmx_output_cycle(ops, dmx_fds, dmx_last_write);
+    }
+
+    /* Shutdown */
+    LOG("Shutting down...");
+
+    if (sacn_sock >= 0) sacn_cleanup(sacn_sock);
+    if (artnet_sock >= 0) artnet_cleanup(artnet_sock);
+    if (shownet_sock >= 0) shownet_cleanup(shownet_sock);
+
+    for (i = 0; i < DMX_MAX_PORTS; i++)
+        if (dmx_fds[i] >= 0) ops->close(dmx_fds[i]);
+
+#ifndef HOST_BUILD
+    remove_pid_file();
+#endif
 
     LOG("Shutdown complete.");
     return 0;

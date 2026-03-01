@@ -84,6 +84,7 @@ exit:
     .size exit, . - exit
 
 SYSCALL waitpid, 7          /* pid_t waitpid(pid_t pid, int *status, int opts) */
+SYSCALL getpid, 20          /* pid_t getpid(void) */
 
 /* ================================================================== */
 /* Signals                                                            */

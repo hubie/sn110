@@ -12,6 +12,7 @@ ssize_t write(int fd, const void *buf, size_t count);
 int     close(int fd);
 int     usleep(unsigned int usec);
 int     unlink(const char *path);
+pid_t   getpid(void);
 
 /* File descriptor constants */
 #define STDIN_FILENO  0

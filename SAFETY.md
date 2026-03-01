@@ -140,17 +140,36 @@ Only proceed after Level 2 testing is thoroughly successful.
 4. Test configuration persistence
 5. Test reboot behavior
 
-**Flash procedure:**
+**Install procedure:**
 ```bash
-# Uses Strand's built-in install mechanism:
-make deploy-flash IP=192.168.0.71
-# This:
-# 1. Uploads the new binary via FTP
-# 2. Uploads an install.sh script
-# 3. Uploads install.arm trigger file
-# 4. The boot script detects install.arm and runs install.sh
-# 5. install.sh uses eflash/wflash/vflash to write flash
+# One-command deploy from your development machine:
+./tools/install.sh 192.168.0.71
+
+# This script:
+# 1. Checks connectivity
+# 2. Downloads original lxnetdmx as local backup (if not already saved)
+# 3. FTPs backup as /usr/bin/lxnetdmx.bak on device
+# 4. FTPs new firmware as /usr/bin/lxnetdmx (direct write — no cp/mv needed)
+# 5. Uploads device-side install script + trigger
+# 6. Device auto-stops old daemon, sets permissions, watchdog starts new firmware
 ```
+
+**Rollback procedure:**
+```bash
+# One-command restore from your development machine:
+./tools/restore.sh 192.168.0.71
+
+# This restores the original Strand firmware from either:
+# - Your local backup (dump/firmware/usr/bin/lxnetdmx)
+# - The device's own backup (/usr/bin/lxnetdmx.bak)
+```
+
+**Important notes:**
+- The device's uClinux shell has NO `cp` or `mv` commands
+- All file placement is done via FTP from the host machine
+- The device install script only handles stop/start/permissions
+- Our binary creates `/var/run/lxnetdmx.pid` for watchdog compatibility
+- SIGTERM triggers a clean shutdown (DMX ports set to zero, PID file removed)
 
 ---
 
@@ -163,18 +182,18 @@ make deploy-flash IP=192.168.0.71
 
 **Recovery:**
 ```bash
-# Telnet in
-telnet 192.168.0.71
+# Quickest: run the restore script
+./tools/restore.sh 192.168.0.71
 
-# Delete the broken binary (stops watchdog from restarting it)
+# Or manually via telnet + FTP:
+telnet 192.168.0.71
 > rm /usr/bin/lxnetdmx
 
-# Upload the original via FTP (from another terminal)
+# From another terminal, upload the original:
 curl -T dump/firmware/usr/bin/lxnetdmx -u anonymous:anonymous \
   ftp://192.168.0.71/usr/bin/lxnetdmx
 
-# Restart it
-> /usr/bin/lxnetdmx &
+# The watchdog auto-restarts it within 10 seconds
 ```
 
 ### Scenario 2: New binary causes kernel panic / hang

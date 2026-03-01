@@ -28,7 +28,7 @@
 #include <stdio.h>
 #define LOG(fmt, ...) fprintf(stderr, "sacn: " fmt "\n", ##__VA_ARGS__)
 #else
-#define LOG(fmt, ...) /* no stdio on device */
+#define LOG(fmt, ...) dprintf(2, "sacn: " fmt "\n", ##__VA_ARGS__)
 #endif
 
 /* sACN packet offsets (E1.31-2016 Table 4-1 through 4-3) */
@@ -86,8 +86,11 @@ int sacn_init(uint16_t universe)
     struct ip_mreq mreq;
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0)
+    if (sock < 0) {
+        LOG("socket() failed: %d", sock);
         return -1;
+    }
+    LOG("socket ok: fd=%d", sock);
 
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
@@ -97,10 +100,11 @@ int sacn_init(uint16_t universe)
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        LOG("bind failed: %d", errno);
+        LOG("bind port %d failed: %d", SACN_PORT, errno);
         close(sock);
         return -1;
     }
+    LOG("bind port %d ok", SACN_PORT);
 
     /* Join multicast group for this universe */
     memset(&mreq, 0, sizeof(mreq));
@@ -109,9 +113,9 @@ int sacn_init(uint16_t universe)
 
     if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP,
                    &mreq, sizeof(mreq)) < 0) {
-        LOG("multicast join failed: %d", errno);
-        close(sock);
-        return -1;
+        LOG("multicast join failed for universe %d: %d", universe, errno);
+        /* Don't fail — we can still receive unicast sACN */
+        LOG("continuing without multicast (unicast only)");
     }
 
     return sock;
