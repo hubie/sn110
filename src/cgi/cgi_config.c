@@ -232,6 +232,7 @@ int main(void)
 
         parse_formdata(body, &cfg);
         config_save(CONFIG_FILE_PATH, &cfg);
+        config_generate_ifup(IFUP_FILE_PATH, &cfg);
 
         printf("<!DOCTYPE html>\n<html><head><title>%s — Saved</title>\n", cfg.hostname);
         emit_css();

@@ -15,6 +15,7 @@
 #include "../common.h"
 
 #define CONFIG_FILE_PATH    "/etc/220node.cfg"
+#define IFUP_FILE_PATH      "/etc/ifup-eth0"
 #define CONFIG_MAX_LINE     256
 
 /*
@@ -34,6 +35,13 @@ int config_save(const char *path, const node_config_t *config);
  * Initialize configuration with defaults.
  */
 void config_defaults(node_config_t *config);
+
+/*
+ * Generate /etc/ifup-eth0 script from configuration.
+ * Static IP writes ifconfig + route; DHCP writes pump.
+ * Returns 0 on success, -1 on error.
+ */
+int config_generate_ifup(const char *path, const node_config_t *config);
 
 /*
  * Parsing helpers — also used by CGI form parser.

@@ -429,8 +429,8 @@ static void test_config_port_mode_rx(void) {
 
     f = fopen(path, "w");
     assert(f != NULL);
-    fprintf(f, "DMX_PORT0_MODE=rx\n");
-    fprintf(f, "DMX_PORT1_MODE=tx\n");
+    fprintf(f, "dmx_port0_mode = rx\n");
+    fprintf(f, "dmx_port1_mode = tx\n");
     fclose(f);
 
     assert(config_load(path, &config) == 0);
@@ -573,7 +573,7 @@ static void test_config_mac_parse(void) {
 
     f = fopen(path, "w");
     assert(f != NULL);
-    fprintf(f, "MAC=00:E0:01:00:EC:FD\n");
+    fprintf(f, "macaddr = 00:E0:01:00:EC:FD\n");
     fclose(f);
 
     assert(config_load(path, &config) == 0);
@@ -663,6 +663,182 @@ static void test_cgi_parse_static_mode(void) {
 }
 
 /* ========================================================================= */
+/* Strand format + ifup tests                                                */
+/* ========================================================================= */
+
+static void test_config_strand_format_load(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_strand.cfg";
+    FILE *f;
+
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f, "nodeaddr = 192.168.0.71\n");
+    fprintf(f, "hostname = SN110-A\n");
+    fprintf(f, "macaddr = 00:E0:01:00:EC:FD\n");
+    fprintf(f, "netmask = 255.255.255.0\n");
+    fprintf(f, "gateway = 192.168.0.1\n");
+    fprintf(f, "protocol = sacn\n");
+    fprintf(f, "dmx_holdtime = 10\n");
+    fprintf(f, "sacn_universe_0 = 42\n");
+    fprintf(f, "sacn_universe_1 = 99\n");
+    fprintf(f, "dmx_port0_mode = rx\n");
+    fprintf(f, "dmx_port1_mode = off\n");
+    fprintf(f, "dmx1_label = Stage\n");
+    fprintf(f, "dmx2_label = Truss\n");
+    fclose(f);
+
+    assert(config_load(path, &config) == 0);
+    assert(config.ip_addr == ((192u << 24) | (168u << 16) | (0u << 8) | 71u));
+    assert(strcmp(config.hostname, "SN110-A") == 0);
+    assert(config.mac[0] == 0x00);
+    assert(config.mac[1] == 0xE0);
+    assert(config.mac[5] == 0xFD);
+    assert(config.netmask == ((255u << 24) | (255u << 16) | (255u << 8) | 0u));
+    assert(config.gateway == ((192u << 24) | (168u << 16) | (0u << 8) | 1u));
+    assert(config.active_protocol == PROTO_SACN);
+    assert(config.dmx_hold_time == 10);
+    assert(config.ports[0].universe == 42);
+    assert(config.ports[1].universe == 99);
+    assert(config.ports[0].mode == DMX_MODE_RX);
+    assert(config.ports[1].mode == DMX_MODE_OFF);
+    assert(strcmp(config.ports[0].label, "Stage") == 0);
+    assert(strcmp(config.ports[1].label, "Truss") == 0);
+
+    remove(path);
+}
+
+static void test_config_preserve_unknown_fields(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_preserve.cfg";
+    FILE *f;
+    char buf[2048];
+    int n;
+
+    /* Write a file with Strand fields we don't manage */
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f, "nodetype = 220\n");
+    fprintf(f, "nodeaddr = 10.0.1.50\n");
+    fprintf(f, "hostname = TESTNODE\n");
+    fprintf(f, "boottest = 1\n");
+    fprintf(f, "dmx = 01FF00\n");
+    fprintf(f, "lcd_contrast = 128\n");
+    fclose(f);
+
+    /* Load and save back */
+    assert(config_load(path, &config) == 0);
+    config.ip_addr = (192u << 24) | (168u << 16) | (1u << 8) | 100u;
+    assert(config_save(path, &config) == 0);
+
+    /* Read file and verify unknown fields survived */
+    f = fopen(path, "r");
+    assert(f != NULL);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    /* Unknown Strand keys should still be there */
+    assert(strstr(buf, "nodetype = 220") != NULL);
+    assert(strstr(buf, "boottest = 1") != NULL);
+    assert(strstr(buf, "dmx = 01FF00") != NULL);
+    assert(strstr(buf, "lcd_contrast = 128") != NULL);
+
+    /* Our updated value should be there */
+    assert(strstr(buf, "nodeaddr = 192.168.1.100") != NULL);
+
+    remove(path);
+}
+
+static void test_config_dhcp_nodeaddr_zero(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_dhcp_zero.cfg";
+    FILE *f;
+    char buf[2048];
+    int n;
+
+    /* Write nodeaddr = 0 (DHCP) */
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f, "nodeaddr = 0\n");
+    fclose(f);
+
+    assert(config_load(path, &config) == 0);
+    assert(config.ip_addr == 0);
+
+    /* Save and verify it writes "nodeaddr = 0" not "0.0.0.0" */
+    assert(config_save(path, &config) == 0);
+
+    f = fopen(path, "r");
+    assert(f != NULL);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    assert(strstr(buf, "nodeaddr = 0\n") != NULL);
+
+    remove(path);
+}
+
+static void test_config_generate_ifup_static(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_ifup_static.sh";
+    char buf[2048];
+    FILE *f;
+    int n;
+
+    config_defaults(&config);
+    config.ip_addr = (192u << 24) | (168u << 16) | (0u << 8) | 71u;
+    config.netmask = (255u << 24) | (255u << 16) | (255u << 8) | 0u;
+    config.gateway = (192u << 24) | (168u << 16) | (0u << 8) | 1u;
+
+    assert(config_generate_ifup(path, &config) == 0);
+
+    f = fopen(path, "r");
+    assert(f != NULL);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    assert(strstr(buf, "#!/bin/sh") != NULL);
+    assert(strstr(buf, "ifconfig eth0 down") != NULL);
+    assert(strstr(buf, "ifconfig eth0 192.168.0.71 netmask 255.255.255.0") != NULL);
+    assert(strstr(buf, "broadcast 192.168.0.255") != NULL);
+    assert(strstr(buf, "route add -net 192.168.0.0 netmask 255.255.255.0 eth0") != NULL);
+    assert(strstr(buf, "route add default gw 192.168.0.1") != NULL);
+
+    remove(path);
+}
+
+static void test_config_generate_ifup_dhcp(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_ifup_dhcp.sh";
+    char buf[2048];
+    FILE *f;
+    int n;
+
+    config_defaults(&config);
+    config.ip_addr = 0; /* DHCP */
+
+    assert(config_generate_ifup(path, &config) == 0);
+
+    f = fopen(path, "r");
+    assert(f != NULL);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    assert(strstr(buf, "#!/bin/sh") != NULL);
+    assert(strstr(buf, "ifconfig eth0 down") != NULL);
+    assert(strstr(buf, "/sbin/pump -i eth0") != NULL);
+    /* Should NOT have ifconfig with IP */
+    assert(strstr(buf, "ifconfig eth0 0") == NULL ||
+           strstr(buf, "ifconfig eth0 down") != NULL);
+
+    remove(path);
+}
+
+/* ========================================================================= */
 /* Main                                                                      */
 /* ========================================================================= */
 
@@ -721,6 +897,13 @@ int main(void) {
     TEST(config_dhcp_save_load);
     TEST(cgi_parse_dhcp_mode);
     TEST(cgi_parse_static_mode);
+
+    printf("\nStrand Format + ifup:\n");
+    TEST(config_strand_format_load);
+    TEST(config_preserve_unknown_fields);
+    TEST(config_dhcp_nodeaddr_zero);
+    TEST(config_generate_ifup_static);
+    TEST(config_generate_ifup_dhcp);
 
     printf("\n================================\n");
     printf("Results: %d/%d tests passed\n", tests_passed, tests_run);
