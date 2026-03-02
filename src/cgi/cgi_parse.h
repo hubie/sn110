@@ -61,6 +61,7 @@ static void url_decode(char *dst, const char *src, int maxlen)
 static void parse_formdata(const char *body, node_config_t *cfg)
 {
     char key[64], raw[192], val[192];
+    int use_dhcp = -1;
 
     while (*body) {
         /* Extract key */
@@ -107,6 +108,19 @@ static void parse_formdata(const char *body, node_config_t *cfg)
             strncpy(cfg->ports[1].label, val, 8);
         else if (strcmp(key, "dmx_hold_time") == 0)
             cfg->dmx_hold_time = atoi(val);
+        else if (strcmp(key, "addr_mode") == 0) {
+            if (strcmp(val, "dhcp") == 0)
+                use_dhcp = 1;
+            else if (strcmp(val, "static") == 0)
+                use_dhcp = 0;
+        }
+    }
+
+    /* Deferred override: DHCP mode zeros out address fields */
+    if (use_dhcp == 1) {
+        cfg->ip_addr = 0;
+        cfg->netmask = 0;
+        cfg->gateway = 0;
     }
 }
 

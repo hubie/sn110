@@ -58,6 +58,19 @@ uint32_t parse_ip(const char *str)
     return 0;
 }
 
+static int parse_mac(const char *str, uint8_t *mac)
+{
+    unsigned int m[6];
+    if (sscanf(str, "%x:%x:%x:%x:%x:%x",
+               &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
+        int i;
+        for (i = 0; i < 6; i++)
+            mac[i] = (uint8_t)m[i];
+        return 0;
+    }
+    return -1;
+}
+
 int parse_mode(const char *str)
 {
     if (strcmp(str, "tx") == 0 || strcmp(str, "TX") == 0)
@@ -108,6 +121,8 @@ int config_load(const char *path, node_config_t *config)
             config->netmask = parse_ip(value);
         else if (strcmp(key, "GATEWAY") == 0)
             config->gateway = parse_ip(value);
+        else if (strcmp(key, "MAC") == 0)
+            parse_mac(value, config->mac);
         else if (strcmp(key, "PROTOCOL") == 0)
             config->active_protocol = parse_protocol(value);
         else if (strcmp(key, "DMX_HOLD_TIME") == 0)
@@ -173,6 +188,9 @@ int config_save(const char *path, const node_config_t *config)
     fprintf(f, "GATEWAY=%u.%u.%u.%u\n",
             (config->gateway >> 24) & 0xFF, (config->gateway >> 16) & 0xFF,
             (config->gateway >> 8) & 0xFF, config->gateway & 0xFF);
+    fprintf(f, "MAC=%02X:%02X:%02X:%02X:%02X:%02X\n",
+            config->mac[0], config->mac[1], config->mac[2],
+            config->mac[3], config->mac[4], config->mac[5]);
     fprintf(f, "\n# Protocol: sacn, artnet, shownet\n");
     fprintf(f, "PROTOCOL=%s\n", protocol_name(config->active_protocol));
     fprintf(f, "DMX_HOLD_TIME=%d\n", config->dmx_hold_time);

@@ -71,9 +71,9 @@ DOCKER_RUN = docker run --rm -v $(shell pwd):/project $(DOCKER_IMAGE)
 # Build Targets
 # ==============================================================================
 
-# CGI binary sources (no minisock/minithread needed)
+# CGI binary sources (minisock needed for MAC address ioctl)
 CGI_SRCS = src/oabi/crt0.S src/oabi/syscalls.S \
-    src/oabi/minilib.c src/config/config.c src/cgi/cgi_config.c
+    src/oabi/minilib.c src/oabi/minisock.c src/config/config.c src/cgi/cgi_config.c
 
 .PHONY: all clean test arm-test oabi-daemon bflt oabi-cgi cgi-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt deploy-web help
 
@@ -91,6 +91,7 @@ help:
 	@echo "  make docker-test  Build Docker image and run ARM tests"
 	@echo "  make docker-shell Open interactive shell in Docker toolchain"
 	@echo "  make deploy-ram   Upload to /tmp/ on device (safe, lost on reboot)"
+	@echo "  make deploy-web   Deploy CGI binary + web UI to device"
 	@echo "  make deploy-flash Flash to device (persistent, read SAFETY.md first!)"
 	@echo "  make backup       Download all files from device via FTP"
 	@echo "  make restore      Restore original lxnetdmx to device"

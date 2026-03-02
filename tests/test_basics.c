@@ -563,6 +563,106 @@ static void test_cgi_parse_formdata_special_chars(void) {
 }
 
 /* ========================================================================= */
+/* MAC + DHCP tests                                                          */
+/* ========================================================================= */
+
+static void test_config_mac_parse(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_mac.cfg";
+    FILE *f;
+
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f, "MAC=00:E0:01:00:EC:FD\n");
+    fclose(f);
+
+    assert(config_load(path, &config) == 0);
+    assert(config.mac[0] == 0x00);
+    assert(config.mac[1] == 0xE0);
+    assert(config.mac[2] == 0x01);
+    assert(config.mac[3] == 0x00);
+    assert(config.mac[4] == 0xEC);
+    assert(config.mac[5] == 0xFD);
+
+    remove(path);
+}
+
+static void test_config_mac_save_load(void) {
+    node_config_t orig, loaded;
+    const char *path = "/tmp/sn110_test_mac2.cfg";
+
+    config_defaults(&orig);
+    orig.mac[0] = 0xAA;
+    orig.mac[1] = 0xBB;
+    orig.mac[2] = 0xCC;
+    orig.mac[3] = 0xDD;
+    orig.mac[4] = 0xEE;
+    orig.mac[5] = 0xFF;
+
+    assert(config_save(path, &orig) == 0);
+    assert(config_load(path, &loaded) == 0);
+
+    assert(loaded.mac[0] == 0xAA);
+    assert(loaded.mac[1] == 0xBB);
+    assert(loaded.mac[2] == 0xCC);
+    assert(loaded.mac[3] == 0xDD);
+    assert(loaded.mac[4] == 0xEE);
+    assert(loaded.mac[5] == 0xFF);
+
+    remove(path);
+}
+
+static void test_config_dhcp_default(void) {
+    node_config_t config;
+    config_defaults(&config);
+    /* memset zeros ip_addr → 0 means DHCP */
+    assert(config.ip_addr == 0);
+}
+
+static void test_config_dhcp_save_load(void) {
+    node_config_t orig, loaded;
+    const char *path = "/tmp/sn110_test_dhcp.cfg";
+
+    config_defaults(&orig);
+    /* ip_addr=0 means DHCP */
+    orig.ip_addr = 0;
+
+    assert(config_save(path, &orig) == 0);
+    assert(config_load(path, &loaded) == 0);
+    assert(loaded.ip_addr == 0);
+
+    remove(path);
+}
+
+static void test_cgi_parse_dhcp_mode(void) {
+    node_config_t cfg;
+    config_defaults(&cfg);
+
+    /* Form has addr_mode=dhcp plus IP fields — DHCP should override */
+    parse_formdata("addr_mode=dhcp&ipaddr=10.0.1.50"
+                   "&netmask=255.255.255.0&gateway=10.0.1.1",
+                   &cfg);
+
+    assert(cfg.ip_addr == 0);
+    assert(cfg.netmask == 0);
+    assert(cfg.gateway == 0);
+}
+
+static void test_cgi_parse_static_mode(void) {
+    node_config_t cfg;
+    config_defaults(&cfg);
+
+    /* Form has addr_mode=static plus IP fields — IPs preserved */
+    parse_formdata("addr_mode=static&ipaddr=10.0.1.50"
+                   "&netmask=255.255.255.0&gateway=10.0.1.1",
+                   &cfg);
+
+    assert(cfg.ip_addr == ((10 << 24) | (0 << 16) | (1 << 8) | 50));
+    assert(cfg.netmask == ((255u << 24) | (255u << 16) | (255u << 8) | 0u));
+    assert(cfg.gateway == ((10 << 24) | (0 << 16) | (1 << 8) | 1));
+}
+
+/* ========================================================================= */
 /* Main                                                                      */
 /* ========================================================================= */
 
@@ -613,6 +713,14 @@ int main(void) {
     TEST(cgi_url_decode);
     TEST(cgi_parse_formdata);
     TEST(cgi_parse_formdata_special_chars);
+
+    printf("\nMAC + DHCP:\n");
+    TEST(config_mac_parse);
+    TEST(config_mac_save_load);
+    TEST(config_dhcp_default);
+    TEST(config_dhcp_save_load);
+    TEST(cgi_parse_dhcp_mode);
+    TEST(cgi_parse_static_mode);
 
     printf("\n================================\n");
     printf("Results: %d/%d tests passed\n", tests_passed, tests_run);
