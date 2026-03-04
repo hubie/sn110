@@ -31,6 +31,20 @@
 #define DMX_MODE_TX         2   /* DMX transmit */
 #define DMX_MODE_RX         3   /* DMX receive */
 
+/* LCD backlight modes */
+#define LCD_BACKLIGHT_OFF   0
+#define LCD_BACKLIGHT_ON    1
+#define LCD_BACKLIGHT_FLASH 2
+
+/* Address mode — separates DHCP intent from current IP value */
+#define ADDR_MODE_STATIC       0
+#define ADDR_MODE_DHCP         1
+#define ADDR_MODE_DHCP_STATIC  2
+
+/* DMX driver selection — kernel (default) vs userspace direct UART access */
+#define DMX_DRIVER_KERNEL  0   /* Default: use /dev/dmx kernel driver */
+#define DMX_DRIVER_DIRECT  1   /* Userspace: mmap UART registers directly */
+
 /* SN110 DMX ioctl: _IOW('d', 1, struct dmx_config) */
 #define DMX_IOCTL_TYPE      'd'
 #define DMX_IOCTL_NR        1
@@ -66,6 +80,13 @@ typedef struct {
 
     int      active_protocol;  /* PROTO_* — primary protocol */
     uint16_t dmx_hold_time;    /* Seconds to hold last DMX values after source loss */
+
+    uint8_t  addr_mode;          /* ADDR_MODE_* — DHCP vs static */
+    uint8_t  lcd_contrast;       /* 0-63 */
+    uint8_t  lcd_backlight;      /* LCD_BACKLIGHT_* */
+    uint16_t dmx_slot_monitor[DMX_MAX_PORTS]; /* 0=disabled, 1-512=channel */
+
+    uint8_t  dmx_driver;           /* DMX_DRIVER_* — kernel or direct UART */
 } node_config_t;
 
 #endif /* SN110_COMMON_H */

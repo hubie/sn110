@@ -30,7 +30,7 @@ OABI_CFLAGS = -Wall -Wextra -Os -g \
 OABI_SRCS = src/oabi/crt0.S src/oabi/syscalls.S \
     src/oabi/minilib.c src/oabi/minisock.c src/oabi/minithread.c \
     src/main.c src/sacn/sacn.c src/sacn/sacn_tx.c src/artnet/artnet.c src/shownet/shownet.c \
-    src/dmx/dmx_real.c src/config/config.c
+    src/dmx/dmx_real.c src/dmx/dmx_direct.c src/config/config.c
 
 # For host-based testing (macOS/Linux native)
 HOST_CC = gcc
@@ -43,6 +43,11 @@ LDFLAGS = -elf2flt
 # Host test flags
 HOST_CFLAGS = -Wall -Wextra -O2 -g -DHOST_BUILD -DMOCK_DMX
 HOST_LDFLAGS = -lpthread
+
+# Sanitizer flags (for test-asan target)
+SANITIZE_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
+SANITIZE_CFLAGS = $(HOST_CFLAGS) $(SANITIZE_FLAGS)
+SANITIZE_LDFLAGS = $(HOST_LDFLAGS) $(SANITIZE_FLAGS)
 
 # --- Target ---
 TARGET = sn110dmx
@@ -75,7 +80,11 @@ DOCKER_RUN = docker run --rm -v $(shell pwd):/project $(DOCKER_IMAGE)
 CGI_SRCS = src/oabi/crt0.S src/oabi/syscalls.S \
     src/oabi/minilib.c src/oabi/minisock.c src/config/config.c src/cgi/cgi_config.c
 
-.PHONY: all clean test arm-test oabi-daemon bflt oabi-cgi cgi-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt deploy-web help
+# Network setup helper sources
+NETSETUP_SRCS = src/oabi/crt0.S src/oabi/syscalls.S \
+    src/oabi/minilib.c src/oabi/minisock.c src/config/config.c src/netsetup/netsetup.c
+
+.PHONY: all clean test test-asan arm-test oabi-daemon bflt oabi-cgi cgi-bflt oabi-netsetup netsetup-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt docker-netsetup-bflt deploy-web fuzz-config fuzz-cgi help
 
 all: $(TARGET_BFLT)
 	@echo "Built $(TARGET_BFLT) ($$(wc -c < $(TARGET_BFLT)) bytes)"
@@ -86,6 +95,9 @@ help:
 	@echo ""
 	@echo "  make              Build cross-compiled bFLT binary (needs uClinux toolchain)"
 	@echo "  make test         Build and run host-based tests (macOS/Linux native)"
+	@echo "  make test-asan    Run tests with AddressSanitizer + UBSan"
+	@echo "  make fuzz-config  Fuzz config_load() parser (requires clang)"
+	@echo "  make fuzz-cgi     Fuzz parse_formdata() CGI parser (requires clang)"
 	@echo "  make arm-test     Build and run ARM tests under QEMU (use inside Docker)"
 	@echo "  make docker-build Build the Docker toolchain image"
 	@echo "  make docker-test  Build Docker image and run ARM tests"
@@ -119,6 +131,45 @@ build/test_runner: $(TEST_SRCS) | build
 
 build:
 	mkdir -p build
+
+# Host tests with AddressSanitizer + UndefinedBehaviorSanitizer
+test-asan: build/test_runner_asan
+	./build/test_runner_asan
+
+build/test_runner_asan: $(TEST_SRCS) | build
+	$(HOST_CC) $(SANITIZE_CFLAGS) -o $@ $(TEST_SRCS) $(SANITIZE_LDFLAGS)
+
+# ==============================================================================
+# Fuzz Testing (libFuzzer — requires clang)
+# ==============================================================================
+
+# Homebrew LLVM has libFuzzer; Apple clang does not
+FUZZ_CC = $(shell [ -x /opt/homebrew/opt/llvm/bin/clang ] && echo /opt/homebrew/opt/llvm/bin/clang || echo clang)
+FUZZ_CFLAGS = -Wall -Wextra -O1 -g -DHOST_BUILD -DMOCK_DMX \
+    -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
+
+fuzz-config: build/fuzz_config | build/corpus_config
+	@echo "Fuzzing config_load() — press Ctrl-C to stop"
+	./build/fuzz_config build/corpus_config
+
+build/fuzz_config: tests/fuzz_config.c $(LIB_SRCS) | build
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tests/fuzz_config.c $(LIB_SRCS) -lpthread
+
+fuzz-cgi: build/fuzz_cgi | build/corpus_cgi
+	@echo "Fuzzing parse_formdata() — press Ctrl-C to stop"
+	./build/fuzz_cgi build/corpus_cgi
+
+build/fuzz_cgi: tests/fuzz_cgi.c $(LIB_SRCS) | build
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tests/fuzz_cgi.c $(LIB_SRCS) -lpthread
+
+# Seed corpus from repo, then use build dir for fuzzer-discovered inputs
+build/corpus_config: tests/corpus_config | build
+	mkdir -p $@
+	cp tests/corpus_config/* $@/ 2>/dev/null || true
+
+build/corpus_cgi: tests/corpus_cgi | build
+	mkdir -p $@
+	cp tests/corpus_cgi/* $@/ 2>/dev/null || true
 
 # ==============================================================================
 # ARM Testing (cross-compiled, runs under QEMU)
@@ -189,6 +240,30 @@ build/cgi_config.bflt: build/cgi_config_reloc.elf tools/elf2bflt.py
 	@SIZE=$$(wc -c < $@); \
 	echo "CGI bFLT size: $$SIZE bytes"
 
+# ==============================================================================
+# Network Setup Helper (OABI → bFLT)
+# ==============================================================================
+
+oabi-netsetup: build/netsetup_oabi
+
+build/netsetup_oabi: $(NETSETUP_SRCS) | build
+	$(ARM_CC) $(OABI_CFLAGS) -o $@ $(NETSETUP_SRCS) $(LIBGCC)
+	@SIZE=$$(wc -c < $@); \
+	echo "netsetup OABI ELF size: $$SIZE bytes"
+
+build/netsetup_reloc.elf: $(NETSETUP_SRCS) src/oabi/flat.ld | build
+	$(ARM_CC) $(OABI_CFLAGS) \
+		-T src/oabi/flat.ld \
+		-Wl,--emit-relocs,--build-id=none \
+		-o $@ $(NETSETUP_SRCS) $(LIBGCC)
+
+netsetup-bflt: build/netsetup.bflt
+
+build/netsetup.bflt: build/netsetup_reloc.elf tools/elf2bflt.py
+	python3 tools/elf2bflt.py $< $@
+	@SIZE=$$(wc -c < $@); \
+	echo "netsetup bFLT size: $$SIZE bytes"
+
 # Minimal test bFLT (hello world — for verifying bFLT format)
 build/hello_device.bflt: tests/hello_device.c src/oabi/crt0.S src/oabi/flat.ld tools/elf2bflt.py | build
 	$(ARM_CC) $(OABI_CFLAGS) \
@@ -216,6 +291,9 @@ docker-bflt: docker-build
 docker-cgi-bflt: docker-build
 	$(DOCKER_RUN) make cgi-bflt
 
+docker-netsetup-bflt: docker-build
+	$(DOCKER_RUN) make netsetup-bflt
+
 docker-shell: docker-build
 	docker run --rm -it -v $(shell pwd):/project $(DOCKER_IMAGE) bash
 
@@ -234,7 +312,7 @@ deploy-ram: $(TARGET_BFLT)
 	@echo "  # Find PID of lxnetdmx and kill it"
 	@echo "  ps"
 
-deploy-web: build/cgi_config.bflt
+deploy-web: docker-cgi-bflt docker-netsetup-bflt
 	python3 tools/deploy_web.py $(IP)
 
 deploy-flash: $(TARGET_BFLT)

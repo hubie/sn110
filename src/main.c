@@ -63,6 +63,7 @@ static uint32_t g_artnet_rx_count = 0;
 static uint32_t g_shownet_rx_count = 0;
 static uint32_t g_dmx_tx_count = 0;
 static uint32_t g_sacn_tx_count = 0;
+static uint32_t g_dmx_in_zero_count = 0;
 
 /* ========================================================================= */
 /* Timestamp helper                                                          */
@@ -338,7 +339,8 @@ int main(int argc, char *argv[])
     }
 
     /* Open and configure DMX ports */
-    ops = dmx_get_ops();
+    ops = dmx_get_ops(g_config.dmx_driver);
+    LOG("DMX driver: %s", g_config.dmx_driver == DMX_DRIVER_DIRECT ? "direct" : "kernel");
     for (i = 0; i < DMX_MAX_PORTS; i++) {
         const char *dev = (i == 0) ? DMX_DEVICE_0 : DMX_DEVICE_1;
         int port_mode = g_config.ports[i].mode;

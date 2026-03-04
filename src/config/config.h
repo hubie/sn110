@@ -15,6 +15,7 @@
 #include "../common.h"
 
 #define CONFIG_FILE_PATH    "/etc/220node.cfg"
+#define STRAND_CONFIG_PATH  "/tmp/220node_strand.cfg"
 #define IFUP_FILE_PATH      "/etc/ifup-eth0"
 #define CONFIG_MAX_LINE     256
 
@@ -30,6 +31,13 @@ int config_load(const char *path, node_config_t *config);
  * Returns 0 on success, -1 on error.
  */
 int config_save(const char *path, const node_config_t *config);
+
+/*
+ * Save Strand-compatible config (only keys nodecfg recognises).
+ * Used for `nodecfg put` which writes to a fixed-size flash sector.
+ * Extension keys are excluded to prevent flash overflow.
+ */
+int config_save_strand(const char *path, const node_config_t *config);
 
 /*
  * Initialize configuration with defaults.
@@ -49,5 +57,8 @@ int config_generate_ifup(const char *path, const node_config_t *config);
 uint32_t parse_ip(const char *str);
 int parse_mode(const char *str);
 int parse_protocol(const char *str);
+int parse_backlight(const char *str);
+int parse_addr_mode(const char *str);
+int parse_dmx_driver(const char *str);
 
 #endif /* SN110_CONFIG_H */

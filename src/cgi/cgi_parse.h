@@ -61,7 +61,6 @@ static void url_decode(char *dst, const char *src, int maxlen)
 static void parse_formdata(const char *body, node_config_t *cfg)
 {
     char key[64], raw[192], val[192];
-    int use_dhcp = -1;
 
     while (*body) {
         /* Extract key */
@@ -108,19 +107,22 @@ static void parse_formdata(const char *body, node_config_t *cfg)
             strncpy(cfg->ports[1].label, val, 8);
         else if (strcmp(key, "dmx_hold_time") == 0)
             cfg->dmx_hold_time = atoi(val);
-        else if (strcmp(key, "addr_mode") == 0) {
-            if (strcmp(val, "dhcp") == 0)
-                use_dhcp = 1;
-            else if (strcmp(val, "static") == 0)
-                use_dhcp = 0;
+        else if (strcmp(key, "lcd_contrast") == 0) {
+            int v_int = atoi(val);
+            if (v_int < 0) v_int = 0;
+            if (v_int > 63) v_int = 63;
+            cfg->lcd_contrast = v_int;
         }
-    }
-
-    /* Deferred override: DHCP mode zeros out address fields */
-    if (use_dhcp == 1) {
-        cfg->ip_addr = 0;
-        cfg->netmask = 0;
-        cfg->gateway = 0;
+        else if (strcmp(key, "lcd_backlight") == 0)
+            cfg->lcd_backlight = parse_backlight(val);
+        else if (strcmp(key, "port0_slot_monitor") == 0)
+            cfg->dmx_slot_monitor[0] = atoi(val);
+        else if (strcmp(key, "port1_slot_monitor") == 0)
+            cfg->dmx_slot_monitor[1] = atoi(val);
+        else if (strcmp(key, "addr_mode") == 0)
+            cfg->addr_mode = parse_addr_mode(val);
+        else if (strcmp(key, "dmx_driver") == 0)
+            cfg->dmx_driver = parse_dmx_driver(val);
     }
 }
 

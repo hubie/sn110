@@ -88,7 +88,9 @@ static void emit_css(void)
 
 static void emit_html_form(const node_config_t *cfg)
 {
-    int is_dhcp = (cfg->ip_addr == 0);
+    int is_dhcp = (cfg->addr_mode == ADDR_MODE_DHCP);
+    int is_dhcp_static = (cfg->addr_mode == ADDR_MODE_DHCP_STATIC);
+    int is_static = (!is_dhcp && !is_dhcp_static);
 
     printf("<!DOCTYPE html>\n<html><head><title>%s Configuration</title>\n", cfg->hostname);
     emit_css();
@@ -112,12 +114,17 @@ static void emit_html_form(const node_config_t *cfg)
            cfg->hostname);
 
     printf("<div class=\"row\"><label>Address Mode</label><div class=\"radio-group\">"
-           "<label><input type=\"radio\" name=\"addr_mode\" value=\"dhcp\"%s> DHCP</label>"
            "<label><input type=\"radio\" name=\"addr_mode\" value=\"static\"%s> Static</label>"
+           "<label><input type=\"radio\" name=\"addr_mode\" value=\"dhcp\"%s> DHCP</label>"
+           "<label><input type=\"radio\" name=\"addr_mode\" value=\"dhcp_static\"%s> DHCP+Static</label>"
            "</div></div>\n",
-           is_dhcp ? " checked" : "", is_dhcp ? "" : " checked");
+           is_static ? " checked" : "",
+           is_dhcp ? " checked" : "",
+           is_dhcp_static ? " checked" : "");
 
-    printf("<p class=\"note\">When DHCP is selected, address fields below are ignored.</p>\n");
+    printf("<p class=\"note\">Static: use address below. "
+           "DHCP: address ignored. "
+           "DHCP+Static: boots with static IP, then tries DHCP.</p>\n");
 
     printf("<div class=\"row\"><label>IP Address</label>"
            "<input type=\"text\" name=\"ipaddr\" value=\"%u.%u.%u.%u\"></div>\n",
@@ -133,6 +140,24 @@ static void emit_html_form(const node_config_t *cfg)
            "<input type=\"text\" name=\"gateway\" value=\"%u.%u.%u.%u\"></div>\n",
            IP_A(cfg->gateway), IP_B(cfg->gateway),
            IP_C(cfg->gateway), IP_D(cfg->gateway));
+
+    printf("</fieldset>\n");
+
+    /* LCD fieldset */
+    printf("<fieldset><legend>LCD</legend>\n");
+
+    printf("<div class=\"row\"><label>Contrast</label>"
+           "<input type=\"number\" name=\"lcd_contrast\" value=\"%d\" min=\"0\" max=\"63\"></div>\n",
+           cfg->lcd_contrast);
+
+    printf("<div class=\"row\"><label>Backlight</label><div class=\"radio-group\">"
+           "<label><input type=\"radio\" name=\"lcd_backlight\" value=\"Off\"%s> Off</label>"
+           "<label><input type=\"radio\" name=\"lcd_backlight\" value=\"On\"%s> On</label>"
+           "<label><input type=\"radio\" name=\"lcd_backlight\" value=\"Flash\"%s> Flash</label>"
+           "</div></div>\n",
+           cfg->lcd_backlight == LCD_BACKLIGHT_OFF ? " checked" : "",
+           cfg->lcd_backlight == LCD_BACKLIGHT_ON ? " checked" : "",
+           cfg->lcd_backlight == LCD_BACKLIGHT_FLASH ? " checked" : "");
 
     printf("</fieldset>\n");
 
@@ -174,6 +199,11 @@ static void emit_html_form(const node_config_t *cfg)
            "<input type=\"text\" name=\"port0_label\" value=\"%s\" maxlength=\"8\"></div>\n",
            cfg->ports[0].label);
 
+    printf("<div class=\"row\"><label>Slot Monitor</label>"
+           "<input type=\"number\" name=\"port0_slot_monitor\" value=\"%d\" min=\"0\" max=\"512\"></div>\n",
+           cfg->dmx_slot_monitor[0]);
+    printf("<p class=\"note\">0 = disabled; 1-512 = show channel value on LCD</p>\n");
+
     printf("</fieldset>\n");
 
     /* Port 1 fieldset */
@@ -195,6 +225,26 @@ static void emit_html_form(const node_config_t *cfg)
     printf("<div class=\"row\"><label>Label</label>"
            "<input type=\"text\" name=\"port1_label\" value=\"%s\" maxlength=\"8\"></div>\n",
            cfg->ports[1].label);
+
+    printf("<div class=\"row\"><label>Slot Monitor</label>"
+           "<input type=\"number\" name=\"port1_slot_monitor\" value=\"%d\" min=\"0\" max=\"512\"></div>\n",
+           cfg->dmx_slot_monitor[1]);
+    printf("<p class=\"note\">0 = disabled; 1-512 = show channel value on LCD</p>\n");
+
+    printf("</fieldset>\n");
+
+    /* Advanced fieldset */
+    printf("<fieldset><legend>Advanced</legend>\n");
+
+    printf("<div class=\"row\"><label>DMX Driver</label><div class=\"radio-group\">"
+           "<label><input type=\"radio\" name=\"dmx_driver\" value=\"kernel\"%s> Kernel</label>"
+           "<label><input type=\"radio\" name=\"dmx_driver\" value=\"direct\"%s> Direct</label>"
+           "</div></div>\n",
+           cfg->dmx_driver == DMX_DRIVER_KERNEL ? " checked" : "",
+           cfg->dmx_driver == DMX_DRIVER_DIRECT ? " checked" : "");
+
+    printf("<p class=\"note\">Kernel: standard driver (reliable, needs &gt;6ms gap between frames). "
+           "Direct: userspace UART (handles fast consoles with &lt;6ms gaps).</p>\n");
 
     printf("</fieldset>\n");
 
@@ -232,18 +282,19 @@ int main(void)
 
         parse_formdata(body, &cfg);
         config_save(CONFIG_FILE_PATH, &cfg);
+        config_save_strand(STRAND_CONFIG_PATH, &cfg);
         config_generate_ifup(IFUP_FILE_PATH, &cfg);
 
         printf("<!DOCTYPE html>\n<html><head><title>%s — Saved</title>\n", cfg.hostname);
+        printf("<meta http-equiv=\"refresh\" content=\"5;url=/cgi-bin/cfgget.cgi\">\n");
         emit_css();
         printf("</head><body>\n");
         printf("<div class=\"header\"><h1>%s</h1></div>\n", cfg.hostname);
         printf("<form style=\"text-align:center;padding-top:40px\">\n");
         printf("<fieldset><legend>Status</legend>\n");
         printf("<p style=\"padding:16px;font-size:1.1em\">Configuration saved.</p>\n");
-        printf("<p class=\"note\" style=\"margin-left:0\">Network changes take effect momentarily.</p>\n");
+        printf("<p class=\"note\" style=\"margin-left:0\">Applying changes — redirecting in a moment...</p>\n");
         printf("</fieldset>\n");
-        printf("<p style=\"margin-top:16px\"><a href=\"/cgi-bin/cfgget.cgi\">Back to configuration</a></p>\n");
         printf("</form>\n");
         printf("</body></html>\n");
     } else {

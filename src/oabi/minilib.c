@@ -524,6 +524,58 @@ char *fgets(char *s, int size, FILE *f)
     return s;
 }
 
+size_t fread(void *ptr, size_t size, size_t nmemb, FILE *f)
+{
+    size_t total = size * nmemb;
+    size_t done = 0;
+    char *dst = (char *)ptr;
+
+    if (!f || !f->in_use || total == 0)
+        return 0;
+
+    /* Drain any buffered data first */
+    while (done < total && f->buf_pos < f->buf_len) {
+        dst[done++] = f->buf[f->buf_pos++];
+    }
+
+    /* Read the rest directly */
+    while (done < total) {
+        int n = read(f->fd, dst + done, total - done);
+        if (n <= 0)
+            break;
+        done += n;
+    }
+    return done / size;
+}
+
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f)
+{
+    size_t total = size * nmemb;
+    if (!f || !f->in_use || total == 0)
+        return 0;
+    /* Flush any buffered data, then write directly */
+    if (f->mode == 'w' && f->buf_pos > 0) {
+        write(f->fd, f->buf, f->buf_pos);
+        f->buf_pos = 0;
+    }
+    int n = write(f->fd, ptr, total);
+    return (n > 0) ? (size_t)n / size : 0;
+}
+
+int fputs(const char *s, FILE *f)
+{
+    if (!f || !f->in_use || !s)
+        return -1;
+    size_t len = strlen(s);
+    if (len == 0)
+        return 0;
+    if (f->mode == 'w' && f->buf_pos > 0) {
+        write(f->fd, f->buf, f->buf_pos);
+        f->buf_pos = 0;
+    }
+    return write(f->fd, s, len);
+}
+
 int fprintf(FILE *f, const char *fmt, ...)
 {
     va_list ap;
@@ -572,6 +624,40 @@ int dprintf(int fd, const char *fmt, ...)
 int remove(const char *path)
 {
     return unlink(path);
+}
+
+/* ================================================================== */
+/* mmap — old_mmap wrapper (6-arg struct packing for NR 90)           */
+/* ================================================================== */
+
+struct mmap_arg_struct {
+    unsigned long addr;
+    unsigned long len;
+    unsigned long prot;
+    unsigned long flags;
+    unsigned long fd;
+    unsigned long offset;
+};
+
+extern long _sys_mmap(struct mmap_arg_struct *args);
+
+void *mmap(void *addr, unsigned long len, int prot, int flags,
+           int fd, unsigned long offset)
+{
+    struct mmap_arg_struct args;
+    long ret;
+
+    args.addr   = (unsigned long)addr;
+    args.len    = len;
+    args.prot   = (unsigned long)prot;
+    args.flags  = (unsigned long)flags;
+    args.fd     = (unsigned long)fd;
+    args.offset = offset;
+
+    ret = _sys_mmap(&args);
+    if (ret < 0 && ret > -4096)
+        return (void *)-1;  /* MAP_FAILED */
+    return (void *)ret;
 }
 
 /* ================================================================== */

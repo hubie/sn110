@@ -32,8 +32,9 @@ typedef struct dmx_ops {
     void (*close)(int fd);
 } dmx_ops_t;
 
-/* Get the appropriate DMX operations for the current platform */
-const dmx_ops_t *dmx_get_ops(void);
+/* Get the appropriate DMX operations for the current platform.
+ * driver: DMX_DRIVER_KERNEL (default) or DMX_DRIVER_DIRECT */
+const dmx_ops_t *dmx_get_ops(int driver);
 
 /* Device paths */
 #ifdef HOST_BUILD
