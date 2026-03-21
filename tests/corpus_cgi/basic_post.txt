@@ -1,0 +1,1 @@
+hostname=SN110&ipaddr=192.168.2.231&netmask=255.255.255.0&gateway=192.168.2.1&addr_mode=static&protocol=sacn&port0_mode=tx&port0_universe=1&port0_label=Port0&port1_mode=tx&port1_universe=2&port1_label=Port1&dmx_hold_time=5&lcd_contrast=15&lcd_backlight=On&port0_slot_monitor=0&port1_slot_monitor=0

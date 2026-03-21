@@ -15,8 +15,10 @@
 #include "../common.h"
 
 #define CONFIG_FILE_PATH    "/etc/220node.cfg"
+#define STRAND_CONFIG_PATH  "/etc/220node.cfg.strand"
 #define IFUP_FILE_PATH      "/etc/ifup-eth0"
 #define CONFIG_MAX_LINE     256
+#define STRAND_MAX_SIZE     2048
 
 /*
  * Load node configuration from file.
@@ -30,6 +32,13 @@ int config_load(const char *path, node_config_t *config);
  * Returns 0 on success, -1 on error.
  */
 int config_save(const char *path, const node_config_t *config);
+
+/*
+ * Save only Strand-compatible keys to a separate file.
+ * Used by the CGI to write a file safe for 'nodecfg put'.
+ * Returns 0 on success, -1 on error, -2 if output exceeds size limit.
+ */
+int config_save_strand(const char *path, const node_config_t *config);
 
 /*
  * Initialize configuration with defaults.
@@ -49,5 +58,8 @@ int config_generate_ifup(const char *path, const node_config_t *config);
 uint32_t parse_ip(const char *str);
 int parse_mode(const char *str);
 int parse_protocol(const char *str);
+int parse_addr_mode(const char *str);
+int parse_backlight(const char *str);
+const char *backlight_name(int mode);
 
 #endif /* SN110_CONFIG_H */
