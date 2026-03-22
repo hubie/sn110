@@ -58,6 +58,22 @@ static void read_iface_mac(uint8_t *mac)
 #define IP_C(ip) (((ip) >>  8) & 0xFF)
 #define IP_D(ip) ( (ip)        & 0xFF)
 
+/* HTML entity escaping for XSS prevention */
+static void html_escape(const char *s)
+{
+    while (*s) {
+        switch (*s) {
+        case '&':  printf("&amp;");  break;
+        case '<':  printf("&lt;");   break;
+        case '>':  printf("&gt;");   break;
+        case '"':  printf("&quot;"); break;
+        case '\'': printf("&#39;");  break;
+        default:   printf("%c", *s); break;
+        }
+        s++;
+    }
+}
+
 static void emit_css(void)
 {
     printf("<style>\n");
@@ -88,15 +104,17 @@ static void emit_css(void)
 
 static void emit_html_form(const node_config_t *cfg)
 {
-    int is_dhcp = (cfg->ip_addr == 0);
-
-    printf("<!DOCTYPE html>\n<html><head><title>%s Configuration</title>\n", cfg->hostname);
+    printf("<!DOCTYPE html>\n<html><head><title>");
+    html_escape(cfg->hostname);
+    printf(" Configuration</title>\n");
     emit_css();
     printf("</head><body>\n");
 
     /* Header bar with device name + MAC */
     printf("<div class=\"header\">\n");
-    printf("<h1>%s</h1>\n", cfg->hostname);
+    printf("<h1>");
+    html_escape(cfg->hostname);
+    printf("</h1>\n");
     printf("<span class=\"mac\">MAC %02X:%02X:%02X:%02X:%02X:%02X</span>\n",
            cfg->mac[0], cfg->mac[1], cfg->mac[2],
            cfg->mac[3], cfg->mac[4], cfg->mac[5]);
@@ -108,16 +126,21 @@ static void emit_html_form(const node_config_t *cfg)
     printf("<fieldset><legend>Network</legend>\n");
 
     printf("<div class=\"row\"><label>Hostname</label>"
-           "<input type=\"text\" name=\"hostname\" value=\"%s\" maxlength=\"15\"></div>\n",
-           cfg->hostname);
+           "<input type=\"text\" name=\"hostname\" value=\"");
+    html_escape(cfg->hostname);
+    printf("\" maxlength=\"15\"></div>\n");
 
     printf("<div class=\"row\"><label>Address Mode</label><div class=\"radio-group\">"
            "<label><input type=\"radio\" name=\"addr_mode\" value=\"dhcp\"%s> DHCP</label>"
            "<label><input type=\"radio\" name=\"addr_mode\" value=\"static\"%s> Static</label>"
+           "<label><input type=\"radio\" name=\"addr_mode\" value=\"dhcp_static\"%s> DHCP+Static</label>"
            "</div></div>\n",
-           is_dhcp ? " checked" : "", is_dhcp ? "" : " checked");
+           cfg->addr_mode == ADDR_MODE_DHCP ? " checked" : "",
+           cfg->addr_mode == ADDR_MODE_STATIC ? " checked" :
+               (cfg->addr_mode == ADDR_MODE_SENTINEL ? " checked" : ""),
+           cfg->addr_mode == ADDR_MODE_DHCP_STATIC ? " checked" : "");
 
-    printf("<p class=\"note\">When DHCP is selected, address fields below are ignored.</p>\n");
+    printf("<p class=\"note\">DHCP+Static tries DHCP first, falls back to static IP.</p>\n");
 
     printf("<div class=\"row\"><label>IP Address</label>"
            "<input type=\"text\" name=\"ipaddr\" value=\"%u.%u.%u.%u\"></div>\n",
@@ -171,8 +194,14 @@ static void emit_html_form(const node_config_t *cfg)
            cfg->ports[0].universe);
 
     printf("<div class=\"row\"><label>Label</label>"
-           "<input type=\"text\" name=\"port0_label\" value=\"%s\" maxlength=\"8\"></div>\n",
-           cfg->ports[0].label);
+           "<input type=\"text\" name=\"port0_label\" value=\"");
+    html_escape(cfg->ports[0].label);
+    printf("\" maxlength=\"8\"></div>\n");
+
+    printf("<div class=\"row\"><label>Slot Monitor</label>"
+           "<input type=\"number\" name=\"slot_monitor_0\" value=\"%d\" min=\"0\" max=\"512\"></div>\n",
+           cfg->dmx_slot_monitor[0]);
+    printf("<p class=\"note\">DMX slot to monitor (0 = disabled, 1-512)</p>\n");
 
     printf("</fieldset>\n");
 
@@ -193,8 +222,32 @@ static void emit_html_form(const node_config_t *cfg)
            cfg->ports[1].universe);
 
     printf("<div class=\"row\"><label>Label</label>"
-           "<input type=\"text\" name=\"port1_label\" value=\"%s\" maxlength=\"8\"></div>\n",
-           cfg->ports[1].label);
+           "<input type=\"text\" name=\"port1_label\" value=\"");
+    html_escape(cfg->ports[1].label);
+    printf("\" maxlength=\"8\"></div>\n");
+
+    printf("<div class=\"row\"><label>Slot Monitor</label>"
+           "<input type=\"number\" name=\"slot_monitor_1\" value=\"%d\" min=\"0\" max=\"512\"></div>\n",
+           cfg->dmx_slot_monitor[1]);
+    printf("<p class=\"note\">DMX slot to monitor (0 = disabled, 1-512)</p>\n");
+
+    printf("</fieldset>\n");
+
+    /* LCD fieldset */
+    printf("<fieldset><legend>LCD</legend>\n");
+
+    printf("<div class=\"row\"><label>Contrast</label>"
+           "<input type=\"number\" name=\"lcd_contrast\" value=\"%d\" min=\"0\" max=\"255\"></div>\n",
+           cfg->lcd_contrast);
+
+    printf("<div class=\"row\"><label>Backlight</label><div class=\"radio-group\">"
+           "<label><input type=\"radio\" name=\"lcd_backlight\" value=\"off\"%s> Off</label>"
+           "<label><input type=\"radio\" name=\"lcd_backlight\" value=\"on\"%s> On</label>"
+           "<label><input type=\"radio\" name=\"lcd_backlight\" value=\"auto\"%s> Auto</label>"
+           "</div></div>\n",
+           cfg->lcd_backlight == LCD_BACKLIGHT_OFF ? " checked" : "",
+           cfg->lcd_backlight == LCD_BACKLIGHT_ON ? " checked" : "",
+           cfg->lcd_backlight == LCD_BACKLIGHT_AUTO ? " checked" : "");
 
     printf("</fieldset>\n");
 
@@ -232,16 +285,22 @@ int main(void)
 
         parse_formdata(body, &cfg);
         config_save(CONFIG_FILE_PATH, &cfg);
+        config_save_strand(STRAND_CONFIG_PATH, &cfg);
         config_generate_ifup(IFUP_FILE_PATH, &cfg);
 
-        printf("<!DOCTYPE html>\n<html><head><title>%s — Saved</title>\n", cfg.hostname);
+        printf("<!DOCTYPE html>\n<html><head><title>");
+        html_escape(cfg.hostname);
+        printf(" — Saved</title>\n");
+        printf("<meta http-equiv=\"refresh\" content=\"3;url=/cgi-bin/cfgget.cgi\">\n");
         emit_css();
         printf("</head><body>\n");
-        printf("<div class=\"header\"><h1>%s</h1></div>\n", cfg.hostname);
+        printf("<div class=\"header\"><h1>");
+        html_escape(cfg.hostname);
+        printf("</h1></div>\n");
         printf("<form style=\"text-align:center;padding-top:40px\">\n");
         printf("<fieldset><legend>Status</legend>\n");
         printf("<p style=\"padding:16px;font-size:1.1em\">Configuration saved.</p>\n");
-        printf("<p class=\"note\" style=\"margin-left:0\">Network changes take effect momentarily.</p>\n");
+        printf("<p class=\"note\" style=\"margin-left:0\">Redirecting in 3 seconds...</p>\n");
         printf("</fieldset>\n");
         printf("<p style=\"margin-top:16px\"><a href=\"/cgi-bin/cfgget.cgi\">Back to configuration</a></p>\n");
         printf("</form>\n");

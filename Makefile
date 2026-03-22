@@ -75,7 +75,17 @@ DOCKER_RUN = docker run --rm -v $(shell pwd):/project $(DOCKER_IMAGE)
 CGI_SRCS = src/oabi/crt0.S src/oabi/syscalls.S \
     src/oabi/minilib.c src/oabi/minisock.c src/config/config.c src/cgi/cgi_config.c
 
-.PHONY: all clean test arm-test oabi-daemon bflt oabi-cgi cgi-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt deploy-web help
+# Fuzzer compiler: needs real clang with libFuzzer (Apple clang lacks it)
+FUZZ_CC := $(shell \
+    if command -v /opt/homebrew/opt/llvm/bin/clang >/dev/null 2>&1; then \
+        echo /opt/homebrew/opt/llvm/bin/clang; \
+    elif command -v /usr/local/opt/llvm/bin/clang >/dev/null 2>&1; then \
+        echo /usr/local/opt/llvm/bin/clang; \
+    else \
+        echo clang; \
+    fi)
+
+.PHONY: all clean test test-asan arm-test oabi-daemon bflt oabi-cgi cgi-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt deploy-web fuzz-config fuzz-cgi help
 
 all: $(TARGET_BFLT)
 	@echo "Built $(TARGET_BFLT) ($$(wc -c < $(TARGET_BFLT)) bytes)"
@@ -119,6 +129,41 @@ build/test_runner: $(TEST_SRCS) | build
 
 build:
 	mkdir -p build
+
+# ==============================================================================
+# Sanitizer Testing (ASan + UBSan)
+# ==============================================================================
+
+test-asan: build/test_runner_asan
+	./build/test_runner_asan
+
+build/test_runner_asan: $(TEST_SRCS) | build
+	$(HOST_CC) $(HOST_CFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer \
+		-o $@ $(TEST_SRCS) $(HOST_LDFLAGS)
+
+# ==============================================================================
+# Fuzzing (requires LLVM clang with libFuzzer)
+# ==============================================================================
+
+fuzz-config: build/fuzz_config
+	@mkdir -p build/corpus_config
+	@[ -d tests/corpus_config ] && cp tests/corpus_config/* build/corpus_config/ 2>/dev/null; true
+	./build/fuzz_config build/corpus_config
+
+build/fuzz_config: tests/fuzz_config.c src/config/config.c | build
+	$(FUZZ_CC) -Wall -Wextra -O2 -g -DHOST_BUILD -DMOCK_DMX \
+		-fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer \
+		-o $@ tests/fuzz_config.c src/config/config.c
+
+fuzz-cgi: build/fuzz_cgi
+	@mkdir -p build/corpus_cgi
+	@[ -d tests/corpus_cgi ] && cp tests/corpus_cgi/* build/corpus_cgi/ 2>/dev/null; true
+	./build/fuzz_cgi build/corpus_cgi
+
+build/fuzz_cgi: tests/fuzz_cgi.c src/config/config.c | build
+	$(FUZZ_CC) -Wall -Wextra -O2 -g -DHOST_BUILD -DMOCK_DMX \
+		-fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer \
+		-o $@ tests/fuzz_cgi.c src/config/config.c
 
 # ==============================================================================
 # ARM Testing (cross-compiled, runs under QEMU)

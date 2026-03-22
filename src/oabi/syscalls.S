@@ -106,6 +106,23 @@ SYSCALL nanosleep, 162      /* int nanosleep(struct timespec *req, *rem) */
 SYSCALL5 select, 142
 
 /* ================================================================== */
+/* Filesystem                                                         */
+/* ================================================================== */
+
+SYSCALL rename, 38          /* int rename(const char *old, const char *new) */
+
+/* ================================================================== */
+/* Memory mapping                                                     */
+/* ================================================================== */
+
+/*
+ * old_mmap (NR 90): takes pointer to 6-arg struct, not register args.
+ * C wrapper in minilib.c packs args into struct and calls this.
+ */
+SYSCALL _sys_mmap, 90       /* void *old_mmap(struct mmap_arg_struct *) */
+SYSCALL munmap, 91           /* int munmap(void *addr, size_t length) */
+
+/* ================================================================== */
 /* Memory — brk is special (doesn't return -errno)                    */
 /* ================================================================== */
 

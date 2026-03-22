@@ -14,6 +14,17 @@
 #define DMX_UNIVERSE_SIZE   512
 #define DMX_MAX_PORTS       2
 
+/* Address mode (how the node gets its IP) */
+#define ADDR_MODE_STATIC    0   /* Static IP from config */
+#define ADDR_MODE_DHCP      1   /* DHCP only */
+#define ADDR_MODE_DHCP_STATIC 2 /* DHCP with static fallback */
+#define ADDR_MODE_SENTINEL  255 /* Unset — infer from nodeaddr */
+
+/* LCD backlight modes */
+#define LCD_BACKLIGHT_OFF   0
+#define LCD_BACKLIGHT_ON    1
+#define LCD_BACKLIGHT_AUTO  2
+
 /* Protocol identifiers */
 #define PROTO_NONE          0
 #define PROTO_SACN          1
@@ -66,6 +77,11 @@ typedef struct {
 
     int      active_protocol;  /* PROTO_* — primary protocol */
     uint16_t dmx_hold_time;    /* Seconds to hold last DMX values after source loss */
+
+    uint8_t  addr_mode;        /* ADDR_MODE_* — how the node gets its IP */
+    uint8_t  lcd_contrast;     /* LCD contrast (0-255) */
+    uint8_t  lcd_backlight;    /* LCD_BACKLIGHT_* */
+    uint16_t dmx_slot_monitor[2]; /* DMX slot to monitor per port (0=disabled, 1-512) */
 } node_config_t;
 
 #endif /* SN110_COMMON_H */

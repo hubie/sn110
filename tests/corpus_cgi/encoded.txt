@@ -1,0 +1,1 @@
+hostname=SN%20110&ipaddr=10.0.1.50&addr_mode=dhcp_static&port0_label=Stage%2FA

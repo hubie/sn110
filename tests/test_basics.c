@@ -284,6 +284,7 @@ static void test_config_save_load(void) {
     const char *path = "/tmp/sn110_test.cfg";
 
     config_defaults(&orig);
+    orig.addr_mode = ADDR_MODE_STATIC;
     orig.active_protocol = PROTO_ARTNET;
     orig.ports[0].universe = 42;
     orig.ports[1].universe = 99;
@@ -643,6 +644,7 @@ static void test_cgi_parse_dhcp_mode(void) {
                    "&netmask=255.255.255.0&gateway=10.0.1.1",
                    &cfg);
 
+    assert(cfg.addr_mode == ADDR_MODE_DHCP);
     assert(cfg.ip_addr == 0);
     assert(cfg.netmask == 0);
     assert(cfg.gateway == 0);
@@ -657,6 +659,7 @@ static void test_cgi_parse_static_mode(void) {
                    "&netmask=255.255.255.0&gateway=10.0.1.1",
                    &cfg);
 
+    assert(cfg.addr_mode == ADDR_MODE_STATIC);
     assert(cfg.ip_addr == ((10 << 24) | (0 << 16) | (1 << 8) | 50));
     assert(cfg.netmask == ((255u << 24) | (255u << 16) | (255u << 8) | 0u));
     assert(cfg.gateway == ((10 << 24) | (0 << 16) | (1 << 8) | 1));
@@ -723,11 +726,12 @@ static void test_config_preserve_unknown_fields(void) {
     fprintf(f, "hostname = TESTNODE\n");
     fprintf(f, "boottest = 1\n");
     fprintf(f, "dmx = 01FF00\n");
-    fprintf(f, "lcd_contrast = 128\n");
+    fprintf(f, "lcd_timeout = 60\n");
     fclose(f);
 
     /* Load and save back */
     assert(config_load(path, &config) == 0);
+    config.addr_mode = ADDR_MODE_STATIC;
     config.ip_addr = (192u << 24) | (168u << 16) | (1u << 8) | 100u;
     assert(config_save(path, &config) == 0);
 
@@ -742,7 +746,7 @@ static void test_config_preserve_unknown_fields(void) {
     assert(strstr(buf, "nodetype = 220") != NULL);
     assert(strstr(buf, "boottest = 1") != NULL);
     assert(strstr(buf, "dmx = 01FF00") != NULL);
-    assert(strstr(buf, "lcd_contrast = 128") != NULL);
+    assert(strstr(buf, "lcd_timeout = 60") != NULL);
 
     /* Our updated value should be there */
     assert(strstr(buf, "nodeaddr = 192.168.1.100") != NULL);
@@ -788,6 +792,7 @@ static void test_config_generate_ifup_static(void) {
     int n;
 
     config_defaults(&config);
+    config.addr_mode = ADDR_MODE_STATIC;
     config.ip_addr = (192u << 24) | (168u << 16) | (0u << 8) | 71u;
     config.netmask = (255u << 24) | (255u << 16) | (255u << 8) | 0u;
     config.gateway = (192u << 24) | (168u << 16) | (0u << 8) | 1u;
@@ -818,6 +823,7 @@ static void test_config_generate_ifup_dhcp(void) {
     int n;
 
     config_defaults(&config);
+    config.addr_mode = ADDR_MODE_DHCP;
     config.ip_addr = 0; /* DHCP */
 
     assert(config_generate_ifup(path, &config) == 0);
@@ -836,6 +842,317 @@ static void test_config_generate_ifup_dhcp(void) {
            strstr(buf, "ifconfig eth0 down") != NULL);
 
     remove(path);
+}
+
+/* ========================================================================= */
+/* addr_mode + Strand-safe save tests                                        */
+/* ========================================================================= */
+
+static void test_config_addr_mode_save_load(void) {
+    node_config_t orig, loaded;
+    const char *path = "/tmp/sn110_test_addr_mode.cfg";
+
+    config_defaults(&orig);
+    orig.addr_mode = ADDR_MODE_DHCP_STATIC;
+    orig.ip_addr = (10 << 24) | (0 << 16) | (1 << 8) | 50;
+    orig.netmask = (255u << 24) | (255u << 16) | (255u << 8) | 0u;
+
+    assert(config_save(path, &orig) == 0);
+    assert(config_load(path, &loaded) == 0);
+    assert(loaded.addr_mode == ADDR_MODE_DHCP_STATIC);
+    assert(loaded.ip_addr == orig.ip_addr);
+
+    remove(path);
+}
+
+static void test_config_addr_mode_backward_compat(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_addr_compat.cfg";
+    FILE *f;
+
+    /* Old config file without addr_mode key */
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f, "nodeaddr = 192.168.0.71\n");
+    fprintf(f, "hostname = SN110\n");
+    fclose(f);
+
+    assert(config_load(path, &config) == 0);
+    assert(config.addr_mode == ADDR_MODE_STATIC); /* inferred from nodeaddr */
+
+    /* Now with nodeaddr = 0 (DHCP) */
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f, "nodeaddr = 0\n");
+    fclose(f);
+
+    assert(config_load(path, &config) == 0);
+    assert(config.addr_mode == ADDR_MODE_DHCP); /* inferred from nodeaddr=0 */
+
+    remove(path);
+}
+
+static void test_config_save_strand_excludes_extensions(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_strand_ext.cfg";
+    char buf[2048];
+    FILE *f;
+    int n;
+
+    config_defaults(&config);
+    config.addr_mode = ADDR_MODE_STATIC;
+    config.ip_addr = (192u << 24) | (168u << 16) | (0u << 8) | 71u;
+    config.lcd_contrast = 200;
+    config.lcd_backlight = LCD_BACKLIGHT_AUTO;
+    config.dmx_slot_monitor[0] = 42;
+
+    assert(config_save_strand(path, &config) == 0);
+
+    f = fopen(path, "r");
+    assert(f != NULL);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    /* Strand keys should be there */
+    assert(strstr(buf, "nodeaddr = 192.168.0.71") != NULL);
+    assert(strstr(buf, "hostname = SN110") != NULL);
+
+    /* Extension keys should NOT be there */
+    assert(strstr(buf, "addr_mode") == NULL);
+    assert(strstr(buf, "lcd_contrast") == NULL);
+    assert(strstr(buf, "lcd_backlight") == NULL);
+    assert(strstr(buf, "dmx_slot_monitor") == NULL);
+
+    remove(path);
+}
+
+static void test_config_save_strand_preserves_unknown(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_strand_unk.cfg";
+    char buf[2048];
+    FILE *f;
+    int n;
+
+    /* Write a file with unknown Strand keys */
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f, "nodetype = 220\n");
+    fprintf(f, "nodeaddr = 10.0.1.50\n");
+    fprintf(f, "boottest = 1\n");
+    fprintf(f, "dmx = 01FF00\n");
+    fclose(f);
+
+    config_defaults(&config);
+    config.addr_mode = ADDR_MODE_STATIC;
+    config.ip_addr = (192u << 24) | (168u << 16) | (1u << 8) | 100u;
+
+    assert(config_save_strand(path, &config) == 0);
+
+    f = fopen(path, "r");
+    assert(f != NULL);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    /* Unknown Strand keys preserved */
+    assert(strstr(buf, "nodetype = 220") != NULL);
+    assert(strstr(buf, "boottest = 1") != NULL);
+    assert(strstr(buf, "dmx = 01FF00") != NULL);
+
+    /* Updated value */
+    assert(strstr(buf, "nodeaddr = 192.168.1.100") != NULL);
+
+    remove(path);
+}
+
+static void test_config_save_strand_size_limit(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_strand_big.cfg";
+    FILE *f;
+    int i;
+
+    /* Write a file that will be over STRAND_MAX_SIZE */
+    f = fopen(path, "w");
+    assert(f != NULL);
+    for (i = 0; i < 200; i++)
+        fprintf(f, "unknownkey_%d = value_with_padding_to_fill_%d\n", i, i);
+    fclose(f);
+
+    config_defaults(&config);
+    config.addr_mode = ADDR_MODE_STATIC;
+    config.ip_addr = (10u << 24) | (0u << 16) | (1u << 8) | 1u;
+
+    /* Should fail with -2 (too large) */
+    assert(config_save_strand(path, &config) == -2);
+
+    remove(path);
+}
+
+static void test_config_dhcp_static_mode(void) {
+    node_config_t orig, loaded;
+    const char *path = "/tmp/sn110_test_dhcp_static.cfg";
+
+    config_defaults(&orig);
+    orig.addr_mode = ADDR_MODE_DHCP_STATIC;
+    orig.ip_addr = (10 << 24) | (0 << 16) | (1 << 8) | 50;
+    orig.netmask = (255u << 24) | (255u << 16) | (255u << 8) | 0u;
+    orig.gateway = (10 << 24) | (0 << 16) | (1 << 8) | 1;
+
+    assert(config_save(path, &orig) == 0);
+    assert(config_load(path, &loaded) == 0);
+    assert(loaded.addr_mode == ADDR_MODE_DHCP_STATIC);
+    assert(loaded.ip_addr == orig.ip_addr);
+    assert(loaded.netmask == orig.netmask);
+    assert(loaded.gateway == orig.gateway);
+
+    remove(path);
+}
+
+static void test_config_generate_ifup_dhcp_static(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_ifup_ds.sh";
+    char buf[2048];
+    FILE *f;
+    int n;
+
+    config_defaults(&config);
+    config.addr_mode = ADDR_MODE_DHCP_STATIC;
+    config.ip_addr = (10 << 24) | (0 << 16) | (1 << 8) | 50;
+    config.netmask = (255u << 24) | (255u << 16) | (255u << 8) | 0u;
+    config.gateway = (10 << 24) | (0 << 16) | (1 << 8) | 1;
+
+    assert(config_generate_ifup(path, &config) == 0);
+
+    f = fopen(path, "r");
+    assert(f != NULL);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    /* Should try DHCP first, then fall back to static */
+    assert(strstr(buf, "/sbin/pump -i eth0 ||") != NULL);
+    assert(strstr(buf, "/sbin/ifconfig eth0 10.0.1.50") != NULL);
+
+    remove(path);
+}
+
+static void test_config_lcd_defaults(void) {
+    node_config_t config;
+    config_defaults(&config);
+    assert(config.lcd_contrast == 128);
+    assert(config.lcd_backlight == LCD_BACKLIGHT_ON);
+}
+
+static void test_config_lcd_save_load(void) {
+    node_config_t orig, loaded;
+    const char *path = "/tmp/sn110_test_lcd.cfg";
+
+    config_defaults(&orig);
+    orig.addr_mode = ADDR_MODE_STATIC;
+    orig.ip_addr = (10 << 24) | 1;
+    orig.lcd_contrast = 200;
+    orig.lcd_backlight = LCD_BACKLIGHT_AUTO;
+    orig.dmx_slot_monitor[0] = 100;
+    orig.dmx_slot_monitor[1] = 256;
+
+    assert(config_save(path, &orig) == 0);
+    assert(config_load(path, &loaded) == 0);
+    assert(loaded.lcd_contrast == 200);
+    assert(loaded.lcd_backlight == LCD_BACKLIGHT_AUTO);
+    assert(loaded.dmx_slot_monitor[0] == 100);
+    assert(loaded.dmx_slot_monitor[1] == 256);
+
+    remove(path);
+}
+
+static void test_config_lcd_backlight_parse(void) {
+    assert(parse_backlight("off") == LCD_BACKLIGHT_OFF);
+    assert(parse_backlight("on") == LCD_BACKLIGHT_ON);
+    assert(parse_backlight("auto") == LCD_BACKLIGHT_AUTO);
+    assert(parse_backlight("bogus") == LCD_BACKLIGHT_ON); /* default */
+}
+
+static void test_cgi_parse_dhcp_static_mode(void) {
+    node_config_t cfg;
+    config_defaults(&cfg);
+
+    parse_formdata("addr_mode=dhcp_static&ipaddr=10.0.1.50"
+                   "&netmask=255.255.255.0&gateway=10.0.1.1",
+                   &cfg);
+
+    assert(cfg.addr_mode == ADDR_MODE_DHCP_STATIC);
+    /* IPs preserved (only DHCP zeroes them) */
+    assert(cfg.ip_addr == ((10 << 24) | (0 << 16) | (1 << 8) | 50));
+    assert(cfg.netmask == ((255u << 24) | (255u << 16) | (255u << 8) | 0u));
+}
+
+static void test_cgi_parse_lcd_fields(void) {
+    node_config_t cfg;
+    config_defaults(&cfg);
+
+    parse_formdata("lcd_contrast=200&lcd_backlight=auto"
+                   "&slot_monitor_0=42&slot_monitor_1=256",
+                   &cfg);
+
+    assert(cfg.lcd_contrast == 200);
+    assert(cfg.lcd_backlight == LCD_BACKLIGHT_AUTO);
+    assert(cfg.dmx_slot_monitor[0] == 42);
+    assert(cfg.dmx_slot_monitor[1] == 256);
+}
+
+static void test_cgi_parse_integer_bounds(void) {
+    node_config_t cfg;
+    config_defaults(&cfg);
+
+    /* Universe clamped to 1-63999 */
+    parse_formdata("port0_universe=0&port1_universe=70000", &cfg);
+    assert(cfg.ports[0].universe == 1);
+    assert(cfg.ports[1].universe == 63999);
+
+    /* Hold time clamped to 0-300 */
+    parse_formdata("dmx_hold_time=500", &cfg);
+    assert(cfg.dmx_hold_time == 300);
+
+    /* Slot monitors clamped to 0-512 */
+    parse_formdata("slot_monitor_0=600", &cfg);
+    assert(cfg.dmx_slot_monitor[0] == 512);
+
+    /* LCD contrast clamped to 0-255 */
+    parse_formdata("lcd_contrast=300", &cfg);
+    assert(cfg.lcd_contrast == 255);
+}
+
+static void test_config_mac_hex_parsing(void) {
+    node_config_t config;
+    const char *path = "/tmp/sn110_test_mac_hex.cfg";
+    FILE *f;
+
+    /* Test that parse_mac works with manual hex parsing (not sscanf %x) */
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f, "macaddr = 00:E0:01:ab:cD:FD\n");
+    fclose(f);
+
+    assert(config_load(path, &config) == 0);
+    assert(config.mac[0] == 0x00);
+    assert(config.mac[1] == 0xE0);
+    assert(config.mac[2] == 0x01);
+    assert(config.mac[3] == 0xAB);
+    assert(config.mac[4] == 0xCD);
+    assert(config.mac[5] == 0xFD);
+
+    remove(path);
+}
+
+static void test_config_ip_octet_validation(void) {
+    /* Valid IP */
+    assert(parse_ip("192.168.0.1") != 0);
+
+    /* Out of range octets should return 0 */
+    assert(parse_ip("256.168.0.1") == 0);
+    assert(parse_ip("192.300.0.1") == 0);
+    assert(parse_ip("192.168.0.999") == 0);
 }
 
 /* ========================================================================= */
@@ -904,6 +1221,23 @@ int main(void) {
     TEST(config_dhcp_nodeaddr_zero);
     TEST(config_generate_ifup_static);
     TEST(config_generate_ifup_dhcp);
+
+    printf("\naddr_mode + Strand-safe save:\n");
+    TEST(config_addr_mode_save_load);
+    TEST(config_addr_mode_backward_compat);
+    TEST(config_save_strand_excludes_extensions);
+    TEST(config_save_strand_preserves_unknown);
+    TEST(config_save_strand_size_limit);
+    TEST(config_dhcp_static_mode);
+    TEST(config_generate_ifup_dhcp_static);
+    TEST(config_lcd_defaults);
+    TEST(config_lcd_save_load);
+    TEST(config_lcd_backlight_parse);
+    TEST(cgi_parse_dhcp_static_mode);
+    TEST(cgi_parse_lcd_fields);
+    TEST(cgi_parse_integer_bounds);
+    TEST(config_mac_hex_parsing);
+    TEST(config_ip_octet_validation);
 
     printf("\n================================\n");
     printf("Results: %d/%d tests passed\n", tests_passed, tests_run);

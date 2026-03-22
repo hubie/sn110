@@ -61,27 +61,65 @@ void config_defaults(node_config_t *config)
     config->ports[1].mode = DMX_MODE_TX;
     config->ports[1].protocol = PROTO_SACN;
     config->ports[1].universe = 2;
+
+    config->addr_mode = ADDR_MODE_SENTINEL; /* will infer from nodeaddr */
+    config->lcd_contrast = 128;
+    config->lcd_backlight = LCD_BACKLIGHT_ON;
 }
 
 uint32_t parse_ip(const char *str)
 {
     unsigned int a, b, c, d;
-    if (sscanf(str, "%u.%u.%u.%u", &a, &b, &c, &d) == 4)
+    if (sscanf(str, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
+        if (a > 255 || b > 255 || c > 255 || d > 255)
+            return 0;
         return (a << 24) | (b << 16) | (c << 8) | d;
+    }
     return 0;
 }
 
+/* Parse a single hex byte (1-2 hex digits). Returns -1 on failure. */
+static int _parse_hex_byte(const char **p)
+{
+    int val = 0;
+    int digits = 0;
+    while (digits < 2) {
+        char c = **p;
+        if (c >= '0' && c <= '9')
+            val = (val << 4) | (c - '0');
+        else if (c >= 'a' && c <= 'f')
+            val = (val << 4) | (c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F')
+            val = (val << 4) | (c - 'A' + 10);
+        else
+            break;
+        (*p)++;
+        digits++;
+    }
+    return digits > 0 ? val : -1;
+}
+
+/*
+ * Parse MAC address string "XX:XX:XX:XX:XX:XX" using manual hex parsing.
+ * minilib sscanf doesn't support %x, so we can't use sscanf here.
+ */
 static int parse_mac(const char *str, uint8_t *mac)
 {
-    unsigned int m[6];
-    if (sscanf(str, "%x:%x:%x:%x:%x:%x",
-               &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
-        int i;
-        for (i = 0; i < 6; i++)
-            mac[i] = (uint8_t)m[i];
-        return 0;
+    const char *p = str;
+    int i;
+
+    for (i = 0; i < 6; i++) {
+        int val = _parse_hex_byte(&p);
+        if (val < 0)
+            return -1;
+        mac[i] = (uint8_t)val;
+        if (i < 5) {
+            if (*p != ':')
+                return -1;
+            p++;
+        }
     }
-    return -1;
+    return 0;
 }
 
 int parse_mode(const char *str)
@@ -104,6 +142,48 @@ int parse_protocol(const char *str)
     if (strcmp(str, "shownet") == 0 || strcmp(str, "ShowNet") == 0)
         return PROTO_SHOWNET;
     return PROTO_NONE;
+}
+
+int parse_addr_mode(const char *str)
+{
+    if (strcmp(str, "dhcp") == 0)
+        return ADDR_MODE_DHCP;
+    if (strcmp(str, "static") == 0)
+        return ADDR_MODE_STATIC;
+    if (strcmp(str, "dhcp_static") == 0)
+        return ADDR_MODE_DHCP_STATIC;
+    return ADDR_MODE_STATIC;
+}
+
+int parse_backlight(const char *str)
+{
+    if (strcmp(str, "off") == 0)
+        return LCD_BACKLIGHT_OFF;
+    if (strcmp(str, "on") == 0)
+        return LCD_BACKLIGHT_ON;
+    if (strcmp(str, "auto") == 0)
+        return LCD_BACKLIGHT_AUTO;
+    return LCD_BACKLIGHT_ON;
+}
+
+const char *backlight_name(int mode)
+{
+    switch (mode) {
+    case LCD_BACKLIGHT_OFF:  return "off";
+    case LCD_BACKLIGHT_ON:   return "on";
+    case LCD_BACKLIGHT_AUTO: return "auto";
+    default:                 return "on";
+    }
+}
+
+static const char *addr_mode_name(int mode)
+{
+    switch (mode) {
+    case ADDR_MODE_DHCP:        return "dhcp";
+    case ADDR_MODE_STATIC:      return "static";
+    case ADDR_MODE_DHCP_STATIC: return "dhcp_static";
+    default:                    return "static";
+    }
 }
 
 int config_load(const char *path, node_config_t *config)
@@ -163,6 +243,28 @@ int config_load(const char *path, node_config_t *config)
             config->ports[0].mode = parse_mode(v);
         else if (strcmp(k, "dmx_port1_mode") == 0)
             config->ports[1].mode = parse_mode(v);
+        else if (strcmp(k, "addr_mode") == 0)
+            config->addr_mode = parse_addr_mode(v);
+        else if (strcmp(k, "lcd_contrast") == 0) {
+            int val = atoi(v);
+            config->lcd_contrast = val < 0 ? 0 : (val > 255 ? 255 : val);
+        }
+        else if (strcmp(k, "lcd_backlight") == 0)
+            config->lcd_backlight = parse_backlight(v);
+        else if (strcmp(k, "dmx_slot_monitor_0") == 0) {
+            int val = atoi(v);
+            config->dmx_slot_monitor[0] = val < 0 ? 0 : (val > 512 ? 512 : val);
+        }
+        else if (strcmp(k, "dmx_slot_monitor_1") == 0) {
+            int val = atoi(v);
+            config->dmx_slot_monitor[1] = val < 0 ? 0 : (val > 512 ? 512 : val);
+        }
+    }
+
+    /* Backward compat: infer addr_mode from nodeaddr if not set */
+    if (config->addr_mode == ADDR_MODE_SENTINEL) {
+        config->addr_mode = (config->ip_addr == 0) ?
+            ADDR_MODE_DHCP : ADDR_MODE_STATIC;
     }
 
     fclose(f);
@@ -193,14 +295,29 @@ static const char *protocol_name(int proto)
  * Keys we manage. When saving, we match existing lines by key and
  * update them in place, then append any that weren't already present.
  */
-#define NUM_MANAGED_KEYS 13
+#define NUM_MANAGED_KEYS 18
 
 static const char *managed_keys[NUM_MANAGED_KEYS] = {
     "nodeaddr", "hostname", "macaddr", "netmask", "gateway",
     "protocol", "dmx_holdtime",
     "sacn_universe_0", "sacn_universe_1",
     "dmx_port0_mode", "dmx_port1_mode",
-    "dmx1_label", "dmx2_label"
+    "dmx1_label", "dmx2_label",
+    "addr_mode", "lcd_contrast", "lcd_backlight",
+    "dmx_slot_monitor_0", "dmx_slot_monitor_1"
+};
+
+/* Keys safe to write via nodecfg put (Strand-compatible subset).
+ * Extension keys (addr_mode, lcd_*, slot_monitor, etc.) are excluded
+ * because they could cause nodecfg to overflow flash. */
+#define NUM_STRAND_KEYS 12
+
+static const char *strand_keys[NUM_STRAND_KEYS] = {
+    "nodeaddr", "hostname", "macaddr", "netmask", "gateway",
+    "protocol", "dmx_holdtime",
+    "sacn_universe_0", "sacn_universe_1",
+    "dmx_port0_mode", "dmx_port1_mode",
+    "dmx1_label"
 };
 
 /* Format one of our managed keys into buf. Returns bytes written. */
@@ -208,7 +325,9 @@ static int format_key(char *buf, int bufsize, const char *key,
                       const node_config_t *config)
 {
     if (strcmp(key, "nodeaddr") == 0) {
-        if (config->ip_addr == 0)
+        /* Write 0 for DHCP mode so Strand's nodecfg generates pump ifup */
+        if (config->addr_mode == ADDR_MODE_DHCP ||
+            config->ip_addr == 0)
             return snprintf(buf, bufsize, "nodeaddr = 0\n");
         return snprintf(buf, bufsize, "nodeaddr = %u.%u.%u.%u\n",
                 (config->ip_addr >> 24) & 0xFF,
@@ -258,6 +377,21 @@ static int format_key(char *buf, int bufsize, const char *key,
     if (strcmp(key, "dmx2_label") == 0)
         return snprintf(buf, bufsize, "dmx2_label = %s\n",
                 config->ports[1].label);
+    if (strcmp(key, "addr_mode") == 0)
+        return snprintf(buf, bufsize, "addr_mode = %s\n",
+                addr_mode_name(config->addr_mode));
+    if (strcmp(key, "lcd_contrast") == 0)
+        return snprintf(buf, bufsize, "lcd_contrast = %d\n",
+                config->lcd_contrast);
+    if (strcmp(key, "lcd_backlight") == 0)
+        return snprintf(buf, bufsize, "lcd_backlight = %s\n",
+                backlight_name(config->lcd_backlight));
+    if (strcmp(key, "dmx_slot_monitor_0") == 0)
+        return snprintf(buf, bufsize, "dmx_slot_monitor_0 = %d\n",
+                config->dmx_slot_monitor[0]);
+    if (strcmp(key, "dmx_slot_monitor_1") == 0)
+        return snprintf(buf, bufsize, "dmx_slot_monitor_1 = %d\n",
+                config->dmx_slot_monitor[1]);
     return 0;
 }
 
@@ -267,14 +401,23 @@ static int format_key(char *buf, int bufsize, const char *key,
  *  2. Rewrite: for each original line, update managed keys or pass through
  *  3. Append any managed keys not already present
  */
-int config_save(const char *path, const node_config_t *config)
+/*
+ * Internal save: write a config file using the given key list.
+ * If skip_extension_keys is set, lines with keys NOT in key_list
+ * are dropped (for strand-safe save). Otherwise unknown lines are preserved.
+ */
+static int _config_save_internal(const char *path,
+                                 const node_config_t *config,
+                                 const char **key_list, int num_keys,
+                                 int skip_extension_keys)
 {
     FILE *f;
     char existing[2048];
     int existing_len = 0;
-    char written[NUM_MANAGED_KEYS];
+    char written[20]; /* max keys */
     int i;
 
+    if (num_keys > 20) num_keys = 20;
     memset(written, 0, sizeof(written));
 
     /* Step 1: Read existing file into memory (if it exists) */
@@ -316,16 +459,30 @@ int config_save(const char *path, const node_config_t *config)
                 char key_tmp[64], val_tmp[192];
                 if (sscanf(linebuf, "%63[^=]=%191[^\n\r]", key_tmp, val_tmp) == 2) {
                     char *k = trim(key_tmp);
-                    /* If it's a managed key, write our updated value */
-                    for (i = 0; i < NUM_MANAGED_KEYS; i++) {
-                        if (strcmp(k, managed_keys[i]) == 0) {
+                    /* If it's in our key list, write updated value */
+                    for (i = 0; i < num_keys; i++) {
+                        if (strcmp(k, key_list[i]) == 0) {
                             char fmtbuf[CONFIG_MAX_LINE];
                             format_key(fmtbuf, sizeof(fmtbuf),
-                                       managed_keys[i], config);
+                                       key_list[i], config);
                             fputs(fmtbuf, f);
                             written[i] = 1;
                             goto next_line;
                         }
+                    }
+                    /* Key not in our list */
+                    if (skip_extension_keys) {
+                        /* Drop extension keys — only preserve
+                         * truly unknown Strand keys */
+                        int is_extension = 0;
+                        for (i = 0; i < NUM_MANAGED_KEYS; i++) {
+                            if (strcmp(k, managed_keys[i]) == 0) {
+                                is_extension = 1;
+                                break;
+                            }
+                        }
+                        if (is_extension)
+                            goto next_line; /* skip it */
                     }
                 }
             }
@@ -338,17 +495,91 @@ next_line:
         }
     }
 
-    /* Step 3: Append any managed keys not already written */
-    for (i = 0; i < NUM_MANAGED_KEYS; i++) {
+    /* Step 3: Append any keys not already written */
+    for (i = 0; i < num_keys; i++) {
         if (!written[i]) {
             char fmtbuf[CONFIG_MAX_LINE];
-            format_key(fmtbuf, sizeof(fmtbuf), managed_keys[i], config);
+            format_key(fmtbuf, sizeof(fmtbuf), key_list[i], config);
             fputs(fmtbuf, f);
         }
     }
 
     fclose(f);
     return 0;
+}
+
+int config_save(const char *path, const node_config_t *config)
+{
+    return _config_save_internal(path, config,
+                                managed_keys, NUM_MANAGED_KEYS, 0);
+}
+
+int config_save_strand(const char *path, const node_config_t *config)
+{
+    int ret;
+
+    ret = _config_save_internal(path, config,
+                                strand_keys, NUM_STRAND_KEYS, 1);
+    if (ret != 0)
+        return ret;
+
+    /* Size check — refuse if output is too large for flash */
+    {
+        FILE *f = fopen(path, "r");
+        if (f) {
+            char buf[STRAND_MAX_SIZE + 1];
+            int n = fread(buf, 1, sizeof(buf), f);
+            fclose(f);
+            if (n > STRAND_MAX_SIZE)
+                return -2; /* too large */
+        }
+    }
+
+    return 0;
+}
+
+/* Helper: write static IP ifconfig + route commands */
+static void _ifup_static(FILE *f, const node_config_t *config)
+{
+    uint32_t bcast;
+    uint32_t net;
+
+    bcast = (config->ip_addr & config->netmask) |
+            (~config->netmask & 0xFFFFFFFF);
+    net = config->ip_addr & config->netmask;
+
+    fprintf(f, "/sbin/ifconfig eth0 %u.%u.%u.%u netmask %u.%u.%u.%u "
+            "broadcast %u.%u.%u.%u up\n",
+            (config->ip_addr >> 24) & 0xFF,
+            (config->ip_addr >> 16) & 0xFF,
+            (config->ip_addr >> 8) & 0xFF,
+            config->ip_addr & 0xFF,
+            (config->netmask >> 24) & 0xFF,
+            (config->netmask >> 16) & 0xFF,
+            (config->netmask >> 8) & 0xFF,
+            config->netmask & 0xFF,
+            (bcast >> 24) & 0xFF,
+            (bcast >> 16) & 0xFF,
+            (bcast >> 8) & 0xFF,
+            bcast & 0xFF);
+
+    fprintf(f, "/sbin/route add -net %u.%u.%u.%u netmask %u.%u.%u.%u eth0\n",
+            (net >> 24) & 0xFF,
+            (net >> 16) & 0xFF,
+            (net >> 8) & 0xFF,
+            net & 0xFF,
+            (config->netmask >> 24) & 0xFF,
+            (config->netmask >> 16) & 0xFF,
+            (config->netmask >> 8) & 0xFF,
+            config->netmask & 0xFF);
+
+    if (config->gateway != 0) {
+        fprintf(f, "/sbin/route add default gw %u.%u.%u.%u\n",
+                (config->gateway >> 24) & 0xFF,
+                (config->gateway >> 16) & 0xFF,
+                (config->gateway >> 8) & 0xFF,
+                config->gateway & 0xFF);
+    }
 }
 
 int config_generate_ifup(const char *path, const node_config_t *config)
@@ -360,52 +591,21 @@ int config_generate_ifup(const char *path, const node_config_t *config)
         return -1;
 
     fprintf(f, "#!/bin/sh\n");
-    fprintf(f, "ifconfig eth0 down\n");
+    fprintf(f, "/sbin/ifconfig eth0 down\n");
 
-    if (config->ip_addr == 0) {
-        /* DHCP mode */
+    switch (config->addr_mode) {
+    case ADDR_MODE_DHCP:
         fprintf(f, "/sbin/pump -i eth0\n");
-    } else {
-        /* Static IP mode */
-        uint32_t bcast;
-        uint32_t net;
-
-        bcast = (config->ip_addr & config->netmask) |
-                (~config->netmask & 0xFFFFFFFF);
-        net = config->ip_addr & config->netmask;
-
-        fprintf(f, "ifconfig eth0 %u.%u.%u.%u netmask %u.%u.%u.%u "
-                "broadcast %u.%u.%u.%u up\n",
-                (config->ip_addr >> 24) & 0xFF,
-                (config->ip_addr >> 16) & 0xFF,
-                (config->ip_addr >> 8) & 0xFF,
-                config->ip_addr & 0xFF,
-                (config->netmask >> 24) & 0xFF,
-                (config->netmask >> 16) & 0xFF,
-                (config->netmask >> 8) & 0xFF,
-                config->netmask & 0xFF,
-                (bcast >> 24) & 0xFF,
-                (bcast >> 16) & 0xFF,
-                (bcast >> 8) & 0xFF,
-                bcast & 0xFF);
-
-        fprintf(f, "route add -net %u.%u.%u.%u netmask %u.%u.%u.%u eth0\n",
-                (net >> 24) & 0xFF,
-                (net >> 16) & 0xFF,
-                (net >> 8) & 0xFF,
-                net & 0xFF,
-                (config->netmask >> 24) & 0xFF,
-                (config->netmask >> 16) & 0xFF,
-                (config->netmask >> 8) & 0xFF,
-                config->netmask & 0xFF);
-
-        if (config->gateway != 0) {
-            fprintf(f, "route add default gw %u.%u.%u.%u\n",
-                    (config->gateway >> 24) & 0xFF,
-                    (config->gateway >> 16) & 0xFF,
-                    (config->gateway >> 8) & 0xFF,
-                    config->gateway & 0xFF);
-        }
+        break;
+    case ADDR_MODE_DHCP_STATIC:
+        /* Try DHCP first, fall back to static if it fails */
+        fprintf(f, "/sbin/pump -i eth0 || {\n");
+        _ifup_static(f, config);
+        fprintf(f, "}\n");
+        break;
+    default: /* ADDR_MODE_STATIC */
+        _ifup_static(f, config);
+        break;
     }
 
     fclose(f);

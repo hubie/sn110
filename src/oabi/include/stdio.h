@@ -14,10 +14,13 @@ extern FILE *stdin;
 extern FILE *stdout;
 extern FILE *stderr;
 
-FILE  *fopen(const char *path, const char *mode);
-int    fclose(FILE *f);
-char  *fgets(char *s, int size, FILE *f);
-int    fprintf(FILE *f, const char *fmt, ...);
+FILE   *fopen(const char *path, const char *mode);
+int     fclose(FILE *f);
+char   *fgets(char *s, int size, FILE *f);
+size_t  fread(void *ptr, size_t size, size_t nmemb, FILE *f);
+size_t  fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f);
+int     fputs(const char *s, FILE *f);
+int     fprintf(FILE *f, const char *fmt, ...);
 int    printf(const char *fmt, ...);
 int    dprintf(int fd, const char *fmt, ...);
 int    snprintf(char *buf, size_t size, const char *fmt, ...);
