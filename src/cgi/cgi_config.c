@@ -251,6 +251,21 @@ static void emit_html_form(const node_config_t *cfg)
 
     printf("</fieldset>\n");
 
+    /* Advanced fieldset */
+    printf("<fieldset><legend>Advanced</legend>\n");
+
+    printf("<div class=\"row\"><label>DMX Driver</label><div class=\"radio-group\">"
+           "<label><input type=\"radio\" name=\"dmx_driver\" value=\"kernel\"%s> Kernel</label>"
+           "<label><input type=\"radio\" name=\"dmx_driver\" value=\"direct\"%s> Direct</label>"
+           "</div></div>\n",
+           cfg->dmx_driver == DMX_DRIVER_KERNEL ? " checked" : "",
+           cfg->dmx_driver == DMX_DRIVER_DIRECT ? " checked" : "");
+
+    printf("<p class=\"note\">Direct mode uses userspace UART for precise TX timing. "
+           "RX always uses kernel driver.</p>\n");
+
+    printf("</fieldset>\n");
+
     printf("<input type=\"submit\" value=\"Save Configuration\">\n");
     printf("</form>\n");
     printf("</body></html>\n");

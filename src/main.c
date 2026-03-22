@@ -62,6 +62,7 @@ static uint32_t g_sacn_rx_count = 0;
 static uint32_t g_artnet_rx_count = 0;
 static uint32_t g_shownet_rx_count = 0;
 static uint32_t g_dmx_tx_count = 0;
+static uint32_t g_dmx_in_zero_count = 0;
 static uint32_t g_sacn_tx_count = 0;
 
 /* ========================================================================= */
@@ -178,7 +179,7 @@ static void remove_pid_file(void)
 /* DMX output — write fresh data to hardware ports                           */
 /* ========================================================================= */
 
-static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
+static void dmx_output_cycle(const dmx_ops_t **port_ops, int *fds,
                              uint32_t *last_write)
 {
     uint32_t t = now_ms();
@@ -196,7 +197,7 @@ static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
             memcpy(frame, g_dmx_out[i].data, DMX_UNIVERSE_SIZE);
             last_write[i] = g_dmx_out[i].last_update_ms;
 
-            ops->write_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
+            port_ops[i]->write_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
             g_dmx_tx_count++;
         } else {
             /* Check for source timeout */
@@ -209,7 +210,7 @@ static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
                 g_dmx_out[i].last_update_ms = 0;
                 g_dmx_out[i].priority = 0;
                 memset(frame, 0, DMX_UNIVERSE_SIZE);
-                ops->write_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
+                port_ops[i]->write_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
             }
         }
     }
@@ -221,7 +222,7 @@ static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
 
 #define SACN_KEEPALIVE_MS 900  /* Re-send if no change within 900ms */
 
-static void dmx_input_cycle(const dmx_ops_t *ops, int *fds)
+static void dmx_input_cycle(const dmx_ops_t **port_ops, int *fds)
 {
     uint32_t t = now_ms();
     uint8_t frame[DMX_UNIVERSE_SIZE];
@@ -236,7 +237,7 @@ static void dmx_input_cycle(const dmx_ops_t *ops, int *fds)
             continue;
 
         /* Non-blocking read from DMX port */
-        n = ops->read_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
+        n = port_ops[i]->read_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
         if (n <= 0) {
             g_dmx_in_zero_count++;
             /* No data available — check keep-alive */
@@ -279,7 +280,9 @@ static void dmx_input_cycle(const dmx_ops_t *ops, int *fds)
 int main(int argc, char *argv[])
 {
     const char *config_path = CONFIG_FILE_PATH;
-    const dmx_ops_t *ops;
+    const dmx_ops_t *tx_ops;        /* ops for TX ports (may be direct) */
+    const dmx_ops_t *rx_ops;        /* ops for RX ports (always kernel) */
+    const dmx_ops_t *port_ops[DMX_MAX_PORTS]; /* per-port ops pointer */
     int sacn_sock = -1, artnet_sock = -1, shownet_sock = -1;
     int dmx_fds[DMX_MAX_PORTS];
     uint32_t dmx_last_write[DMX_MAX_PORTS] = {0};
@@ -337,23 +340,33 @@ int main(int argc, char *argv[])
             LOG("WARNING: failed to init ShowNet");
     }
 
-    /* Open and configure DMX ports */
-    ops = dmx_get_ops();
+    /* Open and configure DMX ports.
+     * When dmx_driver=direct, TX ports use the userspace UART driver
+     * for precise break/MAB timing. RX ports always use the kernel
+     * driver because the ISR-based FIFO draining is essential. */
+    tx_ops = dmx_get_ops(g_config.dmx_driver);
+    rx_ops = dmx_get_rx_ops();
+    LOG("DMX driver: %s (TX), kernel (RX)",
+        g_config.dmx_driver == DMX_DRIVER_DIRECT ? "direct" : "kernel");
     for (i = 0; i < DMX_MAX_PORTS; i++) {
         const char *dev = (i == 0) ? DMX_DEVICE_0 : DMX_DEVICE_1;
         int port_mode = g_config.ports[i].mode;
 
         if (port_mode == DMX_MODE_OFF) {
             dmx_fds[i] = -1;
+            port_ops[i] = tx_ops;
             continue;
         }
 
-        dmx_fds[i] = ops->open(dev);
+        /* Select ops based on port mode */
+        port_ops[i] = (port_mode == DMX_MODE_RX) ? rx_ops : tx_ops;
+
+        dmx_fds[i] = port_ops[i]->open(dev);
         if (dmx_fds[i] < 0) {
             LOG("WARNING: cannot open %s", dev);
             continue;
         }
-        ops->set_mode(dmx_fds[i], port_mode);
+        port_ops[i]->set_mode(dmx_fds[i], port_mode);
 
         /* Initialize sACN transmitter for RX-mode ports */
         if (port_mode == DMX_MODE_RX) {
@@ -421,10 +434,10 @@ int main(int argc, char *argv[])
         }
 
         /* Write DMX output each cycle */
-        dmx_output_cycle(ops, dmx_fds, dmx_last_write);
+        dmx_output_cycle(port_ops, dmx_fds, dmx_last_write);
 
         /* Read DMX input and send sACN each cycle */
-        dmx_input_cycle(ops, dmx_fds);
+        dmx_input_cycle(port_ops, dmx_fds);
     }
 
     /* Shutdown */
@@ -438,7 +451,7 @@ int main(int argc, char *argv[])
         if (g_sacn_tx_active[i])
             sacn_tx_cleanup(&g_sacn_tx[i]);
         if (dmx_fds[i] >= 0)
-            ops->close(dmx_fds[i]);
+            port_ops[i]->close(dmx_fds[i]);
     }
 
 #ifndef HOST_BUILD

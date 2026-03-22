@@ -130,7 +130,13 @@ static const dmx_ops_t mock_ops = {
     .close       = dmx_mock_close,
 };
 
-const dmx_ops_t *dmx_get_ops(void)
+const dmx_ops_t *dmx_get_ops(int driver)
+{
+    (void)driver;  /* mock always returns mock ops */
+    return &mock_ops;
+}
+
+const dmx_ops_t *dmx_get_rx_ops(void)
 {
     return &mock_ops;
 }

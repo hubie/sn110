@@ -11,6 +11,7 @@
 
 #include "dmx.h"
 #include "dmx_ioctl.h"
+#include "dmx_direct.h"
 #include "../common.h"
 
 #include <sys/types.h>
@@ -77,7 +78,14 @@ static const dmx_ops_t real_ops = {
     .close       = dmx_real_close,
 };
 
-const dmx_ops_t *dmx_get_ops(void)
+const dmx_ops_t *dmx_get_ops(int driver)
+{
+    if (driver == DMX_DRIVER_DIRECT)
+        return dmx_direct_get_ops();
+    return &real_ops;
+}
+
+const dmx_ops_t *dmx_get_rx_ops(void)
 {
     return &real_ops;
 }

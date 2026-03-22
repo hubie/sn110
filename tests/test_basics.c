@@ -86,7 +86,7 @@ static void test_dmx_ioctl_constants(void) {
 /* ========================================================================= */
 
 static void test_mock_open_close(void) {
-    const dmx_ops_t *ops = dmx_get_ops();
+    const dmx_ops_t *ops = dmx_get_ops(DMX_DRIVER_KERNEL);
     mock_dmx_reset();
 
     int fd = ops->open("/dev/dmx0");
@@ -95,7 +95,7 @@ static void test_mock_open_close(void) {
 }
 
 static void test_mock_set_mode(void) {
-    const dmx_ops_t *ops = dmx_get_ops();
+    const dmx_ops_t *ops = dmx_get_ops(DMX_DRIVER_KERNEL);
     mock_dmx_reset();
 
     int fd = ops->open("/dev/dmx0");
@@ -107,7 +107,7 @@ static void test_mock_set_mode(void) {
 }
 
 static void test_mock_write_read(void) {
-    const dmx_ops_t *ops = dmx_get_ops();
+    const dmx_ops_t *ops = dmx_get_ops(DMX_DRIVER_KERNEL);
     mock_dmx_reset();
 
     int fd = ops->open("/dev/dmx0");
@@ -136,7 +136,7 @@ static void test_mock_write_read(void) {
 }
 
 static void test_mock_rx_inject(void) {
-    const dmx_ops_t *ops = dmx_get_ops();
+    const dmx_ops_t *ops = dmx_get_ops(DMX_DRIVER_KERNEL);
     mock_dmx_reset();
 
     int fd = ops->open("/dev/dmx0");
@@ -159,7 +159,7 @@ static void test_mock_rx_inject(void) {
 }
 
 static void test_mock_multiple_ports(void) {
-    const dmx_ops_t *ops = dmx_get_ops();
+    const dmx_ops_t *ops = dmx_get_ops(DMX_DRIVER_KERNEL);
     mock_dmx_reset();
 
     int fd0 = ops->open("/dev/dmx0");
@@ -1145,6 +1145,78 @@ static void test_config_mac_hex_parsing(void) {
     remove(path);
 }
 
+/* ========================================================================= */
+/* DMX driver config tests                                                   */
+/* ========================================================================= */
+
+static void test_config_dmx_driver_default(void) {
+    node_config_t config;
+    config_defaults(&config);
+    assert(config.dmx_driver == DMX_DRIVER_KERNEL);
+}
+
+static void test_config_dmx_driver_roundtrip(void) {
+    const char *path = "/tmp/sn110_test_dmx_driver.cfg";
+    node_config_t config, loaded;
+
+    config_defaults(&config);
+    config.addr_mode = ADDR_MODE_STATIC;
+    config.dmx_driver = DMX_DRIVER_DIRECT;
+    config_save(path, &config);
+
+    config_defaults(&loaded);
+    config_load(path, &loaded);
+    assert(loaded.dmx_driver == DMX_DRIVER_DIRECT);
+
+    /* Save with kernel mode */
+    config.dmx_driver = DMX_DRIVER_KERNEL;
+    config_save(path, &config);
+    config_load(path, &loaded);
+    assert(loaded.dmx_driver == DMX_DRIVER_KERNEL);
+
+    remove(path);
+}
+
+static void test_config_dmx_driver_not_in_strand(void) {
+    /* dmx_driver should NOT appear in strand-safe save */
+    const char *path = "/tmp/sn110_test_strand_driver.cfg";
+    const char *strand_path = "/tmp/sn110_test_strand_driver_strand.cfg";
+    node_config_t config;
+    FILE *f;
+    char buf[2048];
+    int n;
+
+    config_defaults(&config);
+    config.addr_mode = ADDR_MODE_STATIC;
+    config.dmx_driver = DMX_DRIVER_DIRECT;
+
+    /* Full save should have dmx_driver */
+    config_save(path, &config);
+    f = fopen(path, "r");
+    assert(f);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+    assert(strstr(buf, "dmx_driver") != NULL);
+
+    /* Strand save should NOT have dmx_driver */
+    config_save_strand(strand_path, &config);
+    f = fopen(strand_path, "r");
+    assert(f);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+    assert(strstr(buf, "dmx_driver") == NULL);
+
+    remove(path);
+    remove(strand_path);
+}
+
+static void test_config_dmx_driver_constants(void) {
+    assert(DMX_DRIVER_KERNEL == 0);
+    assert(DMX_DRIVER_DIRECT == 1);
+}
+
 static void test_config_ip_octet_validation(void) {
     /* Valid IP */
     assert(parse_ip("192.168.0.1") != 0);
@@ -1238,6 +1310,12 @@ int main(void) {
     TEST(cgi_parse_integer_bounds);
     TEST(config_mac_hex_parsing);
     TEST(config_ip_octet_validation);
+
+    printf("\nDMX Driver Config:\n");
+    TEST(config_dmx_driver_default);
+    TEST(config_dmx_driver_roundtrip);
+    TEST(config_dmx_driver_not_in_strand);
+    TEST(config_dmx_driver_constants);
 
     printf("\n================================\n");
     printf("Results: %d/%d tests passed\n", tests_passed, tests_run);

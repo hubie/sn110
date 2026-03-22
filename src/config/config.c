@@ -65,6 +65,7 @@ void config_defaults(node_config_t *config)
     config->addr_mode = ADDR_MODE_SENTINEL; /* will infer from nodeaddr */
     config->lcd_contrast = 128;
     config->lcd_backlight = LCD_BACKLIGHT_ON;
+    config->dmx_driver = DMX_DRIVER_KERNEL;
 }
 
 uint32_t parse_ip(const char *str)
@@ -259,6 +260,12 @@ int config_load(const char *path, node_config_t *config)
             int val = atoi(v);
             config->dmx_slot_monitor[1] = val < 0 ? 0 : (val > 512 ? 512 : val);
         }
+        else if (strcmp(k, "dmx_driver") == 0) {
+            if (strcmp(v, "direct") == 0)
+                config->dmx_driver = DMX_DRIVER_DIRECT;
+            else
+                config->dmx_driver = DMX_DRIVER_KERNEL;
+        }
     }
 
     /* Backward compat: infer addr_mode from nodeaddr if not set */
@@ -295,7 +302,7 @@ static const char *protocol_name(int proto)
  * Keys we manage. When saving, we match existing lines by key and
  * update them in place, then append any that weren't already present.
  */
-#define NUM_MANAGED_KEYS 18
+#define NUM_MANAGED_KEYS 19
 
 static const char *managed_keys[NUM_MANAGED_KEYS] = {
     "nodeaddr", "hostname", "macaddr", "netmask", "gateway",
@@ -304,7 +311,8 @@ static const char *managed_keys[NUM_MANAGED_KEYS] = {
     "dmx_port0_mode", "dmx_port1_mode",
     "dmx1_label", "dmx2_label",
     "addr_mode", "lcd_contrast", "lcd_backlight",
-    "dmx_slot_monitor_0", "dmx_slot_monitor_1"
+    "dmx_slot_monitor_0", "dmx_slot_monitor_1",
+    "dmx_driver"
 };
 
 /* Keys safe to write via nodecfg put (Strand-compatible subset).
@@ -392,6 +400,9 @@ static int format_key(char *buf, int bufsize, const char *key,
     if (strcmp(key, "dmx_slot_monitor_1") == 0)
         return snprintf(buf, bufsize, "dmx_slot_monitor_1 = %d\n",
                 config->dmx_slot_monitor[1]);
+    if (strcmp(key, "dmx_driver") == 0)
+        return snprintf(buf, bufsize, "dmx_driver = %s\n",
+                config->dmx_driver == DMX_DRIVER_DIRECT ? "direct" : "kernel");
     return 0;
 }
 

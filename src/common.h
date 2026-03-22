@@ -42,6 +42,12 @@
 #define DMX_MODE_TX         2   /* DMX transmit */
 #define DMX_MODE_RX         3   /* DMX receive */
 
+/* DMX driver selection — kernel (default) vs userspace direct UART access.
+ * Direct mode bypasses the kernel's RCGT gap timer for precise TX break/MAB
+ * timing. RX always uses the kernel driver (ISR-based FIFO draining). */
+#define DMX_DRIVER_KERNEL  0   /* Default: use /dev/dmx kernel driver */
+#define DMX_DRIVER_DIRECT  1   /* Userspace: mmap UART registers for TX */
+
 /* SN110 DMX ioctl: _IOW('d', 1, struct dmx_config) */
 #define DMX_IOCTL_TYPE      'd'
 #define DMX_IOCTL_NR        1
@@ -82,6 +88,8 @@ typedef struct {
     uint8_t  lcd_contrast;     /* LCD contrast (0-255) */
     uint8_t  lcd_backlight;    /* LCD_BACKLIGHT_* */
     uint16_t dmx_slot_monitor[2]; /* DMX slot to monitor per port (0=disabled, 1-512) */
+
+    uint8_t  dmx_driver;       /* DMX_DRIVER_* — kernel or direct UART */
 } node_config_t;
 
 #endif /* SN110_COMMON_H */

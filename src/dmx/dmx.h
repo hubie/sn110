@@ -32,8 +32,13 @@ typedef struct dmx_ops {
     void (*close)(int fd);
 } dmx_ops_t;
 
-/* Get the appropriate DMX operations for the current platform */
-const dmx_ops_t *dmx_get_ops(void);
+/* Get DMX operations for TX ports.
+ * driver: DMX_DRIVER_KERNEL (default) or DMX_DRIVER_DIRECT */
+const dmx_ops_t *dmx_get_ops(int driver);
+
+/* Get DMX operations for RX ports (always kernel driver).
+ * Direct mode can't do RX — the FIFO overflows between polls. */
+const dmx_ops_t *dmx_get_rx_ops(void);
 
 /* Device paths */
 #ifdef HOST_BUILD

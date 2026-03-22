@@ -131,6 +131,12 @@ static void parse_formdata(const char *body, node_config_t *cfg)
             cfg->dmx_slot_monitor[0] = _clamp(atoi(val), 0, 512);
         else if (strcmp(key, "slot_monitor_1") == 0)
             cfg->dmx_slot_monitor[1] = _clamp(atoi(val), 0, 512);
+        else if (strcmp(key, "dmx_driver") == 0) {
+            if (strcmp(val, "direct") == 0)
+                cfg->dmx_driver = DMX_DRIVER_DIRECT;
+            else
+                cfg->dmx_driver = DMX_DRIVER_KERNEL;
+        }
     }
 
     /* DHCP mode zeros out address fields for Strand compat */
