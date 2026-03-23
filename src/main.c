@@ -62,6 +62,7 @@ static uint32_t g_sacn_rx_count = 0;
 static uint32_t g_artnet_rx_count = 0;
 static uint32_t g_shownet_rx_count = 0;
 static uint32_t g_dmx_tx_count = 0;
+static uint32_t g_dmx_in_zero_count = 0;
 static uint32_t g_sacn_tx_count = 0;
 
 /* ========================================================================= */

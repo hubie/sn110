@@ -85,7 +85,7 @@ FUZZ_CC := $(shell \
         echo clang; \
     fi)
 
-.PHONY: all clean test test-asan arm-test oabi-daemon bflt oabi-cgi cgi-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt deploy-web fuzz-config fuzz-cgi help
+.PHONY: all clean test test-asan arm-test oabi-daemon bflt oabi-cgi cgi-bflt oabi-probe probe-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt docker-probe-bflt deploy-web fuzz-config fuzz-cgi help
 
 all: $(TARGET_BFLT)
 	@echo "Built $(TARGET_BFLT) ($$(wc -c < $(TARGET_BFLT)) bytes)"
@@ -233,6 +233,30 @@ build/cgi_config.bflt: build/cgi_config_reloc.elf tools/elf2bflt.py
 	python3 tools/elf2bflt.py $< $@
 	@SIZE=$$(wc -c < $@); \
 	echo "CGI bFLT size: $$SIZE bytes"
+
+# RCGT probe — on-device UART register experiment tool
+PROBE_SRCS = src/oabi/crt0.S src/oabi/syscalls.S src/oabi/minilib.c tests/rcgt_probe.c
+
+oabi-probe: build/rcgt_probe_oabi
+
+build/rcgt_probe_oabi: $(PROBE_SRCS) | build
+	$(ARM_CC) $(OABI_CFLAGS) -o $@ $(PROBE_SRCS) $(LIBGCC)
+	@SIZE=$$(wc -c < $@); echo "RCGT probe OABI ELF: $$SIZE bytes"
+
+build/rcgt_probe_reloc.elf: $(PROBE_SRCS) src/oabi/flat.ld | build
+	$(ARM_CC) $(OABI_CFLAGS) \
+		-T src/oabi/flat.ld \
+		-Wl,--emit-relocs,--build-id=none \
+		-o $@ $(PROBE_SRCS) $(LIBGCC)
+
+probe-bflt: build/rcgt_probe.bflt
+
+build/rcgt_probe.bflt: build/rcgt_probe_reloc.elf tools/elf2bflt.py
+	python3 tools/elf2bflt.py $< $@
+	@SIZE=$$(wc -c < $@); echo "RCGT probe bFLT: $$SIZE bytes"
+
+docker-probe-bflt: docker-build
+	$(DOCKER_RUN) make probe-bflt
 
 # Minimal test bFLT (hello world — for verifying bFLT format)
 build/hello_device.bflt: tests/hello_device.c src/oabi/crt0.S src/oabi/flat.ld tools/elf2bflt.py | build
