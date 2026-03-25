@@ -99,6 +99,7 @@ static void emit_css(void)
            "font-size:1em;font-weight:600;cursor:pointer}\n");
     printf("input[type=submit]:hover{background:#c73650}\n");
     printf("a{color:#e94560}\n");
+    printf("input[readonly]{opacity:0.45;border-color:#1a1a2e !important;cursor:default}\n");
     printf("</style>\n");
 }
 
@@ -140,20 +141,20 @@ static void emit_html_form(const node_config_t *cfg)
                (cfg->addr_mode == ADDR_MODE_SENTINEL ? " checked" : ""),
            cfg->addr_mode == ADDR_MODE_DHCP_STATIC ? " checked" : "");
 
-    printf("<p class=\"note\">DHCP+Static tries DHCP first, falls back to static IP.</p>\n");
+    printf("<p class=\"note\" id=\"addr_note\">DHCP+Static tries DHCP first, falls back to static IP.</p>\n");
 
     printf("<div class=\"row\"><label>IP Address</label>"
-           "<input type=\"text\" name=\"ipaddr\" value=\"%u.%u.%u.%u\"></div>\n",
+           "<input type=\"text\" name=\"ipaddr\" id=\"f_ip\" value=\"%u.%u.%u.%u\"></div>\n",
            IP_A(cfg->ip_addr), IP_B(cfg->ip_addr),
            IP_C(cfg->ip_addr), IP_D(cfg->ip_addr));
 
     printf("<div class=\"row\"><label>Netmask</label>"
-           "<input type=\"text\" name=\"netmask\" value=\"%u.%u.%u.%u\"></div>\n",
+           "<input type=\"text\" name=\"netmask\" id=\"f_nm\" value=\"%u.%u.%u.%u\"></div>\n",
            IP_A(cfg->netmask), IP_B(cfg->netmask),
            IP_C(cfg->netmask), IP_D(cfg->netmask));
 
     printf("<div class=\"row\"><label>Gateway</label>"
-           "<input type=\"text\" name=\"gateway\" value=\"%u.%u.%u.%u\"></div>\n",
+           "<input type=\"text\" name=\"gateway\" id=\"f_gw\" value=\"%u.%u.%u.%u\"></div>\n",
            IP_A(cfg->gateway), IP_B(cfg->gateway),
            IP_C(cfg->gateway), IP_D(cfg->gateway));
 
@@ -253,6 +254,28 @@ static void emit_html_form(const node_config_t *cfg)
 
     printf("<input type=\"submit\" value=\"Save Configuration\">\n");
     printf("</form>\n");
+
+    /* Inline JS: toggle IP fields based on address mode selection */
+    printf("<script>\n");
+    printf("(function(){\n");
+    printf("var f=[document.getElementById('f_ip'),"
+           "document.getElementById('f_nm'),"
+           "document.getElementById('f_gw')];\n");
+    printf("var note=document.getElementById('addr_note');\n");
+    printf("var radios=document.getElementsByName('addr_mode');\n");
+    printf("function u(){\n");
+    printf("var m='';for(var i=0;i<radios.length;i++){if(radios[i].checked)m=radios[i].value}\n");
+    printf("var ro=(m==='dhcp');\n");
+    printf("for(var i=0;i<f.length;i++){if(ro){f[i].setAttribute('readonly','readonly')}else{f[i].removeAttribute('readonly')}}\n");
+    printf("if(m==='dhcp')note.textContent='IP assigned by DHCP server.';\n");
+    printf("else if(m==='dhcp_static')note.textContent='Fallback IP if DHCP fails.';\n");
+    printf("else note.textContent='';\n");
+    printf("}\n");
+    printf("for(var i=0;i<radios.length;i++){radios[i].onchange=u}\n");
+    printf("u();\n");
+    printf("})();\n");
+    printf("</script>\n");
+
     printf("</body></html>\n");
 }
 
