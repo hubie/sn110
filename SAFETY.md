@@ -80,18 +80,25 @@ interactive/paged — impractical for multi-MB images. FTP can't read device fil
 filesystem (all 33 files verified with correct sizes). Recovery does NOT require
 a raw flash image — we can restore by:
 1. FTP uploading individual files back to their original paths
-2. Or, if we write a custom flash image builder, we can reconstruct a `.chk` image
-   from our file backup
+2. Or, we can reconstruct a `.chk` image from our file backup — the `.chk` format
+   and checksum algorithm have been reverse-engineered (see
+   `docs/solutions/reverse-engineering/strand-chk-firmware-checksum-algorithm.md`)
 
 **What we cannot recover from our backup alone:**
-- The `.chk` image format/checksum algorithm (needed for `flashsw.sh`)
 - The raw flash partition layout / boot block contents
+
+**What we now know (previously unknown):**
+- The `.chk` image format: 4-byte LE checksum + 4092 bytes padding + payload
+- The checksum algorithm: `(sum of 32-bit LE words after header + 9) & 0xFFFFFFFF`
+- Two original Strand firmware images recovered from the Wayback Machine and stored
+  in `dump/official-firmware/`
 
 **Mitigations:**
 - We preserve `eflash`, `wflash`, `vflash` and `nodecfg` — the tools that
   manage flash — so the device can always self-repair
 - File-by-file FTP restore covers the common failure case (bad lxnetdmx binary)
 - The kernel and boot loader are in separate flash blocks that we won't touch
+- We can build valid `.chk` images for `flashsw.sh` using the known checksum algorithm
 
 ---
 

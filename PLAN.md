@@ -275,7 +275,8 @@ artnet_universe_2 = 1    # Art-Net universe for port 2
 **Goal**: Make it easy for anyone to flash their SN110.
 
 **Deliverables**:
-1. Pre-built `.chk` firmware image (if we reverse the checksum format)
+1. Pre-built `.chk` firmware image (checksum algorithm reversed — see
+   `docs/solutions/reverse-engineering/strand-chk-firmware-checksum-algorithm.md`)
 2. Pre-built bFLT binary + install script (simpler alternative)
 3. Step-by-step install guide with photos
 4. Recovery guide
@@ -299,9 +300,11 @@ artnet_universe_2 = 1    # Art-Net universe for port 2
 3. **DMX timing** — Does the kernel driver handle DMX timing (break, MAB, etc.)
    or do we need to bit-bang? Likely handled by driver given the NS7520's UART.
 
-4. **Flash checksum format** — The `nodecfg checksum` command validates `.chk` files.
-   We need to reverse this to create proper flash images. Alternative: use
-   file-by-file FTP upload instead of the `.chk` flash mechanism.
+4. ~~**Flash checksum format**~~ — **RESOLVED.** The `.chk` format is a 4-byte LE
+   checksum + 4092 bytes padding + payload. Checksum algorithm:
+   `(sum of 32-bit LE words after header + 9) & 0xFFFFFFFF`. Two original Strand
+   firmware images recovered from the Wayback Machine. See
+   `docs/solutions/reverse-engineering/strand-chk-firmware-checksum-algorithm.md`.
 
 5. **Thread model** — Pthreads on uClinux with Linux 2.0: are these real pthreads
    or LinuxThreads (clone-based)? The existing binary uses them, so they work.
