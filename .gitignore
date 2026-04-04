@@ -25,3 +25,20 @@ tests/output/
 
 # Device firmware backup (proprietary Strand binaries — not ours to distribute)
 dump/
+2026-03-16_backups/
+
+# Third-party reference code (GPL — licensing mismatch with MIT repo)
+docs/reference/
+
+# Personal tool configs
+.claude/
+.serena/
+
+# JTAG scripts and partial flash dumps (device-specific)
+jtag/
+
+# Working notes
+todos/
+
+# Python cache
+tools/__pycache__/
