@@ -32,10 +32,10 @@ Breakdown:
 
 ```c
 struct dmx_config {         /* 16 bytes total */
-    uint8_t  mode;          /* offset 0:  0=OFF, 1=RAW, 2=TX, 3=RX */
+    uint8_t  mode;          /* offset 0:  0=OFF, 1=TX, 2=RX, 3=RAW */
     uint8_t  flags;         /* offset 1:  always 0 in dmxtst */
-    uint16_t buf_size;      /* offset 2:  512 for RAW, 0 otherwise */
-    uint16_t rate;          /* offset 4:  100 for RAW, 0 otherwise */
+    uint16_t buf_size;      /* offset 2:  512 for TX, 0 otherwise */
+    uint16_t rate;          /* offset 4:  100 for TX, 0 otherwise */
     char     label[8];      /* offset 6:  up to 8-char label string */
     uint8_t  reserved;      /* offset 14: always 0 */
     uint8_t  pad;           /* offset 15: struct padding */
@@ -47,9 +47,9 @@ struct dmx_config {         /* 16 bytes total */
 | Value | Name | Description | buf_size | rate | FIONBIO |
 |-------|------|-------------|----------|------|---------|
 | 0 | OFF | Disable DMX port | 0 | 0 | No |
-| 1 | RAW | Raw serial passthrough | 512 | 100 | Yes |
-| 2 | TX | DMX transmit | 0 | 0 | Yes |
-| 3 | RX | DMX receive | 0 | 0 | Yes |
+| 1 | TX | DMX transmit | 512 | 100 | No |
+| 2 | RX | DMX receive | 0 | 0 | Yes |
+| 3 | RAW | Raw serial buffer (local only, no wire I/O) | 0 | 0 | Yes |
 
 Note: `dmxtst` also supports "silentoff" (same as OFF but no console output)
 and "test" (direct write loop with no ioctl, generates scrolling test pattern).
@@ -69,7 +69,7 @@ orr  r1, r1, r1, lsl #20  ; merge direction and size bits → 0x40106401
 
 ```c
 int fd = open("/dev/dmx0", O_RDWR);
-struct dmx_config cfg = { .mode = 2 /* TX */ };
+struct dmx_config cfg = { .mode = 1 /* TX */ };
 ioctl(fd, 0x40106401, &cfg);
 write(fd, dmx_data, 512);  /* 512-byte DMX frame */
 ```
@@ -78,7 +78,7 @@ write(fd, dmx_data, 512);  /* 512-byte DMX frame */
 
 ```c
 int fd = open("/dev/dmx0", O_RDWR);
-struct dmx_config cfg = { .mode = 3 /* RX */ };
+struct dmx_config cfg = { .mode = 2 /* RX */ };
 ioctl(fd, 0x40106401, &cfg);
 int nonblock = 1;
 ioctl(fd, 0x5421, &nonblock);  /* FIONBIO */
@@ -104,7 +104,7 @@ without requiring the configuration ioctl first.
 
 ## Blocking Control
 
-FIONBIO ioctl (0x5421) is used for TX, RX, and RAW modes:
+FIONBIO ioctl (0x5421) is used for RX and RAW modes:
 - arg = 0 → blocking I/O
 - arg = 1 → non-blocking I/O
 

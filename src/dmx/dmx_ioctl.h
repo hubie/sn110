@@ -25,19 +25,19 @@
  * Struct layout determined by tracing register/memory writes in dmxtst
  * for each mode (off, raw, tx, rx):
  *
- *   offset 0  (uint8_t):  mode       — 0=OFF, 1=RAW, 2=TX, 3=RX
+ *   offset 0  (uint8_t):  mode       — 0=OFF, 1=TX, 2=RX, 3=RAW
  *   offset 1  (uint8_t):  flags      — always 0 in dmxtst
- *   offset 2  (uint16_t): buf_size   — 512 for RAW, 0 for TX/RX/OFF
- *   offset 4  (uint16_t): rate       — 100 for RAW, 0 for TX/RX/OFF
+ *   offset 2  (uint16_t): buf_size   — 512 for TX, 0 for RX/RAW/OFF
+ *   offset 4  (uint16_t): rate       — 100 for TX, 0 for RX/RAW/OFF
  *   offset 6  (char[8]):  label      — up to 8-char label from CLI
  *   offset 14 (uint8_t):  reserved   — always 0
  *   offset 15 (uint8_t):  pad        — struct padding
  */
 struct dmx_config {
-    uint8_t  mode;          /* DMX_MODE_OFF/RAW/TX/RX */
+    uint8_t  mode;          /* DMX_MODE_OFF/TX/RX/RAW */
     uint8_t  flags;
-    uint16_t buf_size;      /* 512 for RAW mode */
-    uint16_t rate;          /* 100 for RAW mode (units unknown, possibly Hz) */
+    uint16_t buf_size;      /* 512 for TX mode */
+    uint16_t rate;          /* 100 for TX mode (units unknown, possibly Hz) */
     char     label[8];
     uint8_t  reserved;
     uint8_t  pad;
