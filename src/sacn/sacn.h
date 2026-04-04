@@ -78,4 +78,7 @@ uint32_t sacn_multicast_addr(uint16_t universe);
  */
 void sacn_cleanup(int sock_fd);
 
+/* Debug: dump recv stats to /tmp/sacn_dbg.txt */
+void sacn_dump_recv_stats(void);
+
 #endif /* SN110_SACN_H */

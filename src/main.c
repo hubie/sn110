@@ -64,6 +64,7 @@ static uint32_t g_shownet_rx_count = 0;
 static uint32_t g_dmx_tx_count = 0;
 static uint32_t g_dmx_in_zero_count = 0;
 static uint32_t g_sacn_tx_count = 0;
+static int g_dmx_in_last_read = 0;
 
 /* ========================================================================= */
 /* Timestamp helper                                                          */
@@ -179,6 +180,33 @@ static void remove_pid_file(void)
 /* DMX output — write fresh data to hardware ports                           */
 /* ========================================================================= */
 
+/*
+ * DMX TX uses open→write→close per frame.
+ * The kernel driver transmits the buffered data when the fd is closed.
+ * This matches the factory dmxtst "test" mode behavior.
+ */
+static void dmx_tx_write(const dmx_ops_t *ops, int *fds, int port,
+                          const uint8_t *data, int len)
+{
+    const char *dev = (port == 0) ? DMX_DEVICE_0 : DMX_DEVICE_1;
+    int fd;
+
+    /* Close previous fd (triggers TX of any buffered data) */
+    if (fds[port] >= 0)
+        close(fds[port]);
+
+    /* Open fresh, write, close to trigger transmission */
+    fd = open(dev, O_RDWR);
+    if (fd < 0)
+        return;
+
+    write(fd, data, len);
+    close(fd);
+
+    /* Reopen for next cycle */
+    fds[port] = open(dev, O_RDWR);
+}
+
 static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
                              uint32_t *last_write)
 {
@@ -197,7 +225,7 @@ static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
             memcpy(frame, g_dmx_out[i].data, DMX_UNIVERSE_SIZE);
             last_write[i] = g_dmx_out[i].last_update_ms;
 
-            ops->write_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
+            dmx_tx_write(ops, fds, i, frame, DMX_UNIVERSE_SIZE);
             g_dmx_tx_count++;
         } else {
             /* Check for source timeout */
@@ -210,7 +238,7 @@ static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
                 g_dmx_out[i].last_update_ms = 0;
                 g_dmx_out[i].priority = 0;
                 memset(frame, 0, DMX_UNIVERSE_SIZE);
-                ops->write_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
+                dmx_tx_write(ops, fds, i, frame, DMX_UNIVERSE_SIZE);
             }
         }
     }
@@ -238,6 +266,7 @@ static void dmx_input_cycle(const dmx_ops_t *ops, int *fds)
 
         /* Non-blocking read from DMX port */
         n = ops->read_frame(fds[i], frame, DMX_UNIVERSE_SIZE);
+        g_dmx_in_last_read = n; /* track for debug */
         if (n <= 0) {
             g_dmx_in_zero_count++;
             /* No data available — check keep-alive */
@@ -354,7 +383,11 @@ int main(int argc, char *argv[])
             LOG("WARNING: cannot open %s", dev);
             continue;
         }
-        ops->set_mode(dmx_fds[i], port_mode);
+        {
+            int rc = ops->set_mode(dmx_fds[i], port_mode);
+            LOG("Port %d: %s fd=%d mode=%d ioctl=%d",
+                i, dev, dmx_fds[i], port_mode, rc);
+        }
 
         /* Initialize sACN transmitter for RX-mode ports */
         if (port_mode == DMX_MODE_RX) {
@@ -373,59 +406,91 @@ int main(int argc, char *argv[])
 
     /* ---- Main event loop ---- */
     while (g_running) {
-        fd_set readfds;
-        int maxfd = -1;
-        struct timeval tv;
-
-        FD_ZERO(&readfds);
-
+        /*
+         * Poll protocol sockets directly — non-blocking recv().
+         * (select() is broken for UDP on this Linux 2.0 kernel)
+         */
         if (sacn_sock >= 0) {
-            FD_SET(sacn_sock, &readfds);
-            if (sacn_sock > maxfd) maxfd = sacn_sock;
+            sacn_packet_t sacn_pkt;
+            int src = sacn_receive(sacn_sock, &sacn_pkt);
+            if (src == 0)
+                handle_sacn_packet(&sacn_pkt);
+            /* Track recv results for debug */
+            {
+                static int recv_ok = 0, recv_fail = 0;
+                static uint32_t last_recv_dbg = 0;
+                if (src == 0) recv_ok++;
+                else recv_fail++;
+                if (now_ms() - last_recv_dbg > 5000) {
+                    last_recv_dbg = now_ms();
+                    LOG("DBG-SACN: recv ok=%d fail=%d", recv_ok, recv_fail);
+                }
+            }
         }
         if (artnet_sock >= 0) {
-            FD_SET(artnet_sock, &readfds);
-            if (artnet_sock > maxfd) maxfd = artnet_sock;
+            artnet_dmx_packet_t artnet_pkt;
+            if (artnet_receive(artnet_sock, &artnet_pkt) == 0)
+                handle_artnet_packet(&artnet_pkt);
         }
         if (shownet_sock >= 0) {
-            FD_SET(shownet_sock, &readfds);
-            if (shownet_sock > maxfd) maxfd = shownet_sock;
+            shownet_packet_t shownet_pkt;
+            if (shownet_receive(shownet_sock, &shownet_pkt) == 0)
+                handle_shownet_packet(&shownet_pkt);
         }
 
-        /* 23ms timeout ≈ 44Hz DMX refresh rate */
-        tv.tv_sec = 0;
-        tv.tv_usec = 23000;
-
-        if (maxfd >= 0 && select(maxfd + 1, &readfds, NULL, NULL, &tv) > 0) {
-            /* Handle sACN packets */
-            if (sacn_sock >= 0 && FD_ISSET(sacn_sock, &readfds)) {
-                sacn_packet_t sacn_pkt;
-                if (sacn_receive(sacn_sock, &sacn_pkt) == 0)
-                    handle_sacn_packet(&sacn_pkt);
-            }
-
-            /* Handle Art-Net packets */
-            if (artnet_sock >= 0 && FD_ISSET(artnet_sock, &readfds)) {
-                artnet_dmx_packet_t artnet_pkt;
-                if (artnet_receive(artnet_sock, &artnet_pkt) == 0)
-                    handle_artnet_packet(&artnet_pkt);
-            }
-
-            /* Handle ShowNet packets */
-            if (shownet_sock >= 0 && FD_ISSET(shownet_sock, &readfds)) {
-                shownet_packet_t shownet_pkt;
-                if (shownet_receive(shownet_sock, &shownet_pkt) == 0)
-                    handle_shownet_packet(&shownet_pkt);
-            }
-        } else if (maxfd < 0) {
-            usleep(23000);
-        }
+        /* Pace the loop at ~44Hz DMX refresh rate */
+        usleep(23000);
 
         /* Write DMX output each cycle */
         dmx_output_cycle(ops, dmx_fds, dmx_last_write);
 
         /* Read DMX input and send sACN each cycle */
         dmx_input_cycle(ops, dmx_fds);
+
+        /* Periodic debug dump every ~5 seconds — write to file */
+        {
+            static uint32_t last_debug = 0;
+            uint32_t now = now_ms();
+            if (now - last_debug > 5000) {
+                char dbg[512];
+                int dlen, dfd;
+                last_debug = now;
+                LOG("DBG: sacn_rx=%d dmx_tx=%d in_zero=%d sacn_tx=%d rd=%d",
+                    (int)g_sacn_rx_count, (int)g_dmx_tx_count,
+                    (int)g_dmx_in_zero_count, (int)g_sacn_tx_count,
+                    g_dmx_in_last_read);
+                LOG("DBG: out[0] ch1-3: %d %d %d  len=%d",
+                    g_dmx_out[0].data[0], g_dmx_out[0].data[1],
+                    g_dmx_out[0].data[2], g_dmx_out[0].length);
+                LOG("DBG: in[1] ch1-3: %d %d %d  len=%d",
+                    g_dmx_in[1].data[0], g_dmx_in[1].data[1],
+                    g_dmx_in[1].data[2], g_dmx_in[1].length);
+
+                /* Dump sACN recv stats to file */
+                sacn_dump_recv_stats();
+
+                /* Also write to /tmp/dbg.txt for easy retrieval */
+                dlen = snprintf(dbg, sizeof(dbg),
+                    "sacn_rx=%d dmx_tx=%d sacn_tx=%d rd=%d\n"
+                    "out0=%d,%d,%d len=%d out1=%d,%d,%d len=%d\n"
+                    "in0=%d,%d,%d len=%d in1=%d,%d,%d len=%d\n",
+                    (int)g_sacn_rx_count, (int)g_dmx_tx_count,
+                    (int)g_sacn_tx_count, g_dmx_in_last_read,
+                    g_dmx_out[0].data[0], g_dmx_out[0].data[1],
+                    g_dmx_out[0].data[2], g_dmx_out[0].length,
+                    g_dmx_out[1].data[0], g_dmx_out[1].data[1],
+                    g_dmx_out[1].data[2], g_dmx_out[1].length,
+                    g_dmx_in[0].data[0], g_dmx_in[0].data[1],
+                    g_dmx_in[0].data[2], g_dmx_in[0].length,
+                    g_dmx_in[1].data[0], g_dmx_in[1].data[1],
+                    g_dmx_in[1].data[2], g_dmx_in[1].length);
+                dfd = open("/tmp/dbg.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (dfd >= 0) {
+                    write(dfd, dbg, dlen);
+                    close(dfd);
+                }
+            }
+        }
     }
 
     /* Shutdown */

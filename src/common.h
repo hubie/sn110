@@ -37,10 +37,15 @@
  * The kernel driver uses ioctl _IOW('d', 1, struct dmx_config) = 0x40106401
  * where the first byte of the 16-byte config struct is the mode:
  */
+/*
+ * DMX mode values — corrected from dmxtst binary reverse-engineering.
+ * dmxtst "tx" → ioctl mode=1, "rx" → mode=2, "raw" → mode=3.
+ * The original code had these swapped (RAW=1, TX=2, RX=3).
+ */
 #define DMX_MODE_OFF        0   /* Disable DMX port */
-#define DMX_MODE_RAW        1   /* Raw serial (buf_size=512, rate=100) */
-#define DMX_MODE_TX         2   /* DMX transmit */
-#define DMX_MODE_RX         3   /* DMX receive */
+#define DMX_MODE_TX         1   /* DMX transmit */
+#define DMX_MODE_RX         2   /* DMX receive */
+#define DMX_MODE_RAW        3   /* Raw serial buffer (buf_size=512, rate=100) */
 
 /* SN110 DMX ioctl: _IOW('d', 1, struct dmx_config) */
 #define DMX_IOCTL_TYPE      'd'
