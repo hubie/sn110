@@ -66,7 +66,11 @@ The two DMX ports are exposed as character devices:
 
 ## LCD Display
 
-- Device: `/dev/lcd0`
-- Controlled via `sn110lcd` utility
-- Supports user messages: `sn110lcd /dev/lcd0 usermsg <text>`
-- Supports boot messages: `sn110lcd /dev/lcd0 bootupmsg`
+- Device: `/dev/lcd0`, 4 lines × 16 characters
+- Kernel driver interface:
+  - `write()`: 64-byte circular buffer mapped linearly to the 4×16 display
+  - `ioctl _IOW('l', 7, 48)`: cursor-positioned NUL-terminated partial write (the mechanism used by `lxnetdmx` for heartbeat blink)
+  - `ioctl 0x6C02`: clear screen
+  - See `docs/lcd-partial-write.md` for full command table
+- Factory userland utility: `sn110lcd /dev/lcd0 usermsg <text>` (used by install/rollback scripts)
+- Factory boot screen: `sn110lcd /dev/lcd0 bootupmsg`
