@@ -26,6 +26,7 @@
 #include "artnet/artnet.h"
 #include "shownet/shownet.h"
 #include "config/config.h"
+#include "lcd/lcd.h"
 
 #include <string.h>
 #include <signal.h>
@@ -65,6 +66,13 @@ static uint32_t g_dmx_tx_count = 0;
 static uint32_t g_dmx_in_zero_count = 0;
 static uint32_t g_sacn_tx_count = 0;
 static int g_dmx_in_last_read = 0;
+
+/* Hold timer tracking — set when source timeout first detected per port */
+static uint32_t g_hold_start_ms[DMX_MAX_PORTS];
+
+/* LCD update pacing */
+#define LCD_UPDATE_MS 1000
+static uint32_t g_lcd_last_update_ms = 0;
 
 /* ========================================================================= */
 /* Timestamp helper                                                          */
@@ -224,21 +232,33 @@ static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
         if (g_dmx_out[i].last_update_ms > last_write[i]) {
             memcpy(frame, g_dmx_out[i].data, DMX_UNIVERSE_SIZE);
             last_write[i] = g_dmx_out[i].last_update_ms;
+            g_hold_start_ms[i] = 0; /* source recovered — reset hold */
 
             dmx_tx_write(ops, fds, i, frame, DMX_UNIVERSE_SIZE);
             g_dmx_tx_count++;
         } else {
-            /* Check for source timeout */
+            /* Check for source timeout → hold → blackout */
             uint32_t age = t - g_dmx_out[i].last_update_ms;
-            int timed_out = (g_dmx_out[i].last_update_ms > 0) &&
-                            (age > (uint32_t)g_config.dmx_hold_time * 1000);
+            int source_lost = (g_dmx_out[i].last_update_ms > 0) &&
+                              (age > SACN_TIMEOUT_MS);
 
-            if (timed_out) {
-                memset(g_dmx_out[i].data, 0, DMX_UNIVERSE_SIZE);
-                g_dmx_out[i].last_update_ms = 0;
-                g_dmx_out[i].priority = 0;
-                memset(frame, 0, DMX_UNIVERSE_SIZE);
-                dmx_tx_write(ops, fds, i, frame, DMX_UNIVERSE_SIZE);
+            if (source_lost) {
+                /* Start hold timer on first detection */
+                if (g_hold_start_ms[i] == 0)
+                    g_hold_start_ms[i] = t;
+
+                /* Check if hold period expired */
+                if ((t - g_hold_start_ms[i]) >
+                    (uint32_t)g_config.dmx_hold_time * 1000) {
+                    /* Blackout */
+                    memset(g_dmx_out[i].data, 0, DMX_UNIVERSE_SIZE);
+                    g_dmx_out[i].last_update_ms = 0;
+                    g_dmx_out[i].priority = 0;
+                    g_hold_start_ms[i] = 0;
+                    memset(frame, 0, DMX_UNIVERSE_SIZE);
+                    dmx_tx_write(ops, fds, i, frame, DMX_UNIVERSE_SIZE);
+                }
+                /* else: still in hold period, keep outputting last data */
             }
         }
     }
@@ -315,7 +335,7 @@ int main(int argc, char *argv[])
     uint32_t dmx_last_write[DMX_MAX_PORTS] = {0};
     int i;
 
-    LOG("sn110dmx v0.2.0 — Open-source DMX gateway");
+    LOG("sn110dmx v0.3.0 — Open-source DMX gateway");
     LOG("Strand SN110 multi-protocol firmware");
 
     /* Parse optional config path argument */
@@ -342,6 +362,7 @@ int main(int argc, char *argv[])
     memset(g_dmx_in, 0, sizeof(g_dmx_in));
     memset(g_sacn_tx_active, 0, sizeof(g_sacn_tx_active));
     memset(g_dmx_in_last_send, 0, sizeof(g_dmx_in_last_send));
+    memset(g_hold_start_ms, 0, sizeof(g_hold_start_ms));
 
     /* Install signal handlers for clean shutdown */
     signal(SIGTERM, signal_handler);
@@ -350,6 +371,8 @@ int main(int argc, char *argv[])
 
 #ifndef HOST_BUILD
     write_pid_file();
+    lcd_init(g_config.lcd_contrast, g_config.lcd_backlight);
+    g_lcd_last_update_ms = now_ms();
 #endif
 
     /* Initialize protocol sockets */
@@ -491,6 +514,55 @@ int main(int argc, char *argv[])
                 }
             }
         }
+
+        /* Refresh LCD status display once per second */
+#ifndef HOST_BUILD
+        {
+            uint32_t now = now_ms();
+            if (now - g_lcd_last_update_ms >= LCD_UPDATE_MS) {
+                lcd_state_t ls;
+                int p;
+
+                g_lcd_last_update_ms = now;
+
+                /* Populate LCD state snapshot */
+                memset(&ls, 0, sizeof(ls));
+                memcpy(ls.hostname, g_config.hostname,
+                       sizeof(ls.hostname));
+                ls.ip_addr = g_config.ip_addr;
+                memcpy(ls.mac, g_config.mac, 6);
+                ls.addr_mode = g_config.addr_mode;
+                ls.link_up = 1; /* TODO: detect via SIOCGIFFLAGS */
+
+                for (p = 0; p < DMX_MAX_PORTS; p++) {
+                    uint32_t age;
+                    ls.port[p].mode = g_config.ports[p].mode;
+                    ls.port[p].universe = g_config.ports[p].universe;
+
+                    if (g_config.ports[p].mode == DMX_MODE_TX) {
+                        /* TX port: receiving sACN → outputting DMX */
+                        age = (g_dmx_out[p].last_update_ms > 0)
+                              ? (now - g_dmx_out[p].last_update_ms) : 0;
+                        ls.port[p].live = (g_dmx_out[p].last_update_ms > 0)
+                                          && (age < SACN_TIMEOUT_MS);
+                        ls.port[p].held = (g_hold_start_ms[p] > 0);
+                        if (ls.port[p].held) {
+                            uint32_t elapsed = now - g_hold_start_ms[p];
+                            uint32_t total = (uint32_t)g_config.dmx_hold_time * 1000;
+                            ls.port[p].hold_remaining_ms =
+                                (elapsed < total) ? (total - elapsed) : 0;
+                        }
+                    } else if (g_config.ports[p].mode == DMX_MODE_RX) {
+                        /* RX port: reading DMX → sending sACN */
+                        ls.port[p].live = (g_dmx_in[p].last_update_ms > 0);
+                    }
+                    /* DMX_MODE_OFF: all zeros from memset */
+                }
+
+                lcd_update(&ls);
+            }
+        }
+#endif
     }
 
     /* Shutdown */
@@ -508,6 +580,7 @@ int main(int argc, char *argv[])
     }
 
 #ifndef HOST_BUILD
+    lcd_shutdown();
     remove_pid_file();
 #endif
 

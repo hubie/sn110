@@ -30,7 +30,8 @@ OABI_CFLAGS = -Wall -Wextra -Os -g \
 OABI_SRCS = src/oabi/crt0.S src/oabi/syscalls.S \
     src/oabi/minilib.c src/oabi/minisock.c src/oabi/minithread.c \
     src/main.c src/sacn/sacn.c src/sacn/sacn_tx.c src/artnet/artnet.c src/shownet/shownet.c \
-    src/dmx/dmx_real.c src/config/config.c
+    src/dmx/dmx_real.c src/config/config.c \
+    src/lcd/lcd.c src/lcd/lcd_hw.c
 
 # For host-based testing (macOS/Linux native)
 HOST_CC = gcc
