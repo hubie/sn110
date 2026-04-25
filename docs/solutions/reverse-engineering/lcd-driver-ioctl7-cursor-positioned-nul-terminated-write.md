@@ -90,11 +90,15 @@ The lxnetdmx heartbeat pattern: `buf[2]=12, buf[3]=0, buf[4]=0x03` (CGRAM heart 
 | Byte value | Behavior |
 |-----------|----------|
 | `0x00` | NUL — terminates write immediately |
-| `0x01`-`0x07` | CGRAM custom glyphs — pass through unchanged |
+| `0x01`-`0x08` | CP437 glyphs — displayed directly |
+| `0x09`, `0x0B`-`0x0D` | Blank (no glyph displayed) |
 | `0x0A` | Newline — pads remainder of current line with spaces, advances to next row |
+| `0x0E`-`0x1F` | CP437 graphical glyphs — displayed directly (arrows, triangles, etc.) |
 | `0x20`-`0x7F` | Printable ASCII — written directly |
 | `0x80`+ | Replaced with space |
-| Other control chars | Replaced with space |
+
+*Updated 2026-04-23: on-device testing disproved the earlier prediction that
+0x08-0x1F would be filtered to space. See [companion verification doc](lcd-driver-partial-update-verification-and-safety.md) for full details.*
 
 ### Ioctl command table (selected entries)
 
@@ -123,7 +127,8 @@ The OR/XOR/AND write modes (stored at device offset 0x61E) exist in the driver b
 - **CGRAM char 0x00 is unreachable** — NUL is always a terminator. Use slots 0x01-0x07 for custom glyphs.
 - **Cursor state is per-device, not per-fd** — two processes writing to `/dev/lcd0` share one cursor. Use ioctl cmd 7 (which sets cursor explicitly) to avoid races.
 - **Newline pads to end-of-line** — `\n` fills the rest of the current line with spaces. Never use `\n` for partial line updates.
-- **Control chars and 0x80+ are silently replaced with space** — do not encode status using high bytes.
+- **0x80+ bytes are silently replaced with space** — do not encode status using high bytes.
+- **Contrast (cmd 17) must use values 0-63 only** — negative values crash the device. See [companion verification doc](lcd-driver-partial-update-verification-and-safety.md).
 
 ## Testing
 

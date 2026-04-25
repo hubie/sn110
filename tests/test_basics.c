@@ -70,9 +70,9 @@ static void test_dmx_frame_size(void) {
 static void test_dmx_mode_values(void) {
     /* These must match the reverse-engineered kernel driver values */
     assert(DMX_MODE_OFF == 0);
-    assert(DMX_MODE_RAW == 1);
-    assert(DMX_MODE_TX  == 2);
-    assert(DMX_MODE_RX  == 3);
+    assert(DMX_MODE_TX  == 1);
+    assert(DMX_MODE_RX  == 2);
+    assert(DMX_MODE_RAW == 3);
 }
 
 static void test_dmx_ioctl_constants(void) {

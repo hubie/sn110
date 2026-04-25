@@ -85,7 +85,7 @@ FUZZ_CC := $(shell \
         echo clang; \
     fi)
 
-.PHONY: all clean test test-asan arm-test oabi-daemon bflt oabi-cgi cgi-bflt oabi-probe probe-bflt oabi-lcd-probe lcd-probe-bflt oabi-lcd-partial lcd-partial-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt docker-probe-bflt docker-lcd-probe-bflt docker-lcd-partial-bflt deploy-web fuzz-config fuzz-cgi help
+.PHONY: all clean test test-asan arm-test oabi-daemon bflt oabi-cgi cgi-bflt oabi-probe probe-bflt oabi-lcd-probe lcd-probe-bflt oabi-lcd-partial lcd-partial-bflt oabi-lcd-verify lcd-verify-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt docker-probe-bflt docker-lcd-probe-bflt docker-lcd-partial-bflt docker-lcd-verify-bflt deploy-web fuzz-config fuzz-cgi help
 
 all: $(TARGET_BFLT)
 	@echo "Built $(TARGET_BFLT) ($$(wc -c < $(TARGET_BFLT)) bytes)"
@@ -305,6 +305,30 @@ build/lcd_partial.bflt: build/lcd_partial_reloc.elf tools/elf2bflt.py
 
 docker-lcd-partial-bflt: docker-build
 	$(DOCKER_RUN) make lcd-partial-bflt
+
+# LCD verify test (character filter, contrast, backlight, pixel writes)
+LCD_VERIFY_SRCS = src/oabi/crt0.S src/oabi/syscalls.S src/oabi/minilib.c tests/lcd_verify.c
+
+oabi-lcd-verify: build/lcd_verify_oabi
+
+build/lcd_verify_oabi: $(LCD_VERIFY_SRCS) | build
+	$(ARM_CC) $(OABI_CFLAGS) -o $@ $(LCD_VERIFY_SRCS) $(LIBGCC)
+	@SIZE=$$(wc -c < $@); echo "LCD verify OABI ELF: $$SIZE bytes"
+
+build/lcd_verify_reloc.elf: $(LCD_VERIFY_SRCS) src/oabi/flat.ld | build
+	$(ARM_CC) $(OABI_CFLAGS) \
+		-T src/oabi/flat.ld \
+		-Wl,--emit-relocs,--build-id=none \
+		-o $@ $(LCD_VERIFY_SRCS) $(LIBGCC)
+
+lcd-verify-bflt: build/lcd_verify.bflt
+
+build/lcd_verify.bflt: build/lcd_verify_reloc.elf tools/elf2bflt.py
+	python3 tools/elf2bflt.py $< $@
+	@SIZE=$$(wc -c < $@); echo "LCD verify bFLT: $$SIZE bytes"
+
+docker-lcd-verify-bflt: docker-build
+	$(DOCKER_RUN) make lcd-verify-bflt
 
 # Minimal test bFLT (hello world — for verifying bFLT format)
 build/hello_device.bflt: tests/hello_device.c src/oabi/crt0.S src/oabi/flat.ld tools/elf2bflt.py | build
