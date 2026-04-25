@@ -63,7 +63,7 @@ void config_defaults(node_config_t *config)
     config->ports[1].universe = 2;
 
     config->addr_mode = ADDR_MODE_SENTINEL; /* will infer from nodeaddr */
-    config->lcd_contrast = 128;
+    config->lcd_contrast = 32;  /* hardware range 0-63; 32 is a good mid-point */
     config->lcd_backlight = LCD_BACKLIGHT_ON;
 }
 
@@ -247,7 +247,7 @@ int config_load(const char *path, node_config_t *config)
             config->addr_mode = parse_addr_mode(v);
         else if (strcmp(k, "lcd_contrast") == 0) {
             int val = atoi(v);
-            config->lcd_contrast = val < 0 ? 0 : (val > 255 ? 255 : val);
+            config->lcd_contrast = val < 0 ? 0 : (val > 63 ? 63 : val);
         }
         else if (strcmp(k, "lcd_backlight") == 0)
             config->lcd_backlight = parse_backlight(v);

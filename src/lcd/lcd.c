@@ -23,6 +23,9 @@
 #include <string.h>
 #include <stdio.h>
 
+_Static_assert(LCD_PORT_COUNT == DMX_MAX_PORTS,
+               "LCD_PORT_COUNT must match DMX_MAX_PORTS");
+
 /* ========================================================================= */
 /* Display mode state machine                                                */
 /* ========================================================================= */
@@ -56,7 +59,7 @@ typedef struct {
 
 static lcd_mode_t   g_mode = MODE_BOOT;
 static int          g_boot_ticks = 0;    /* counts up; splash ends at 5 */
-static int          g_carousel_tick = 0; /* IP/MAC toggle counter */
+static unsigned int g_carousel_tick = 0; /* IP/MAC toggle counter */
 static port_flash_t g_flash[LCD_PORT_COUNT];
 
 /* CP437 direction arrows — physical orientation relative to ports below display */
@@ -105,7 +108,9 @@ static void combine_halves(char *out, const char *left, const char *right)
     for (i = len; i < 8; i++) r[i] = ' ';
     r[8] = '\0';
 
-    snprintf(out, LCD_COLS + 1, "%s%s", l, r);
+    memcpy(out, l, 8);
+    memcpy(out + 8, r, 8);
+    out[16] = '\0';
 }
 
 /* ========================================================================= */
@@ -304,7 +309,7 @@ void lcd_init(int contrast, int backlight)
     lcd_hw_backlight(backlight);
 
     /* Show boot splash */
-    lcd_hw_write_line(0, "sn110dmx v0.3.0");
+    lcd_hw_write_line(0, "sn110dmx v" FW_VERSION);
     lcd_hw_write_line(1, " Open Firmware");
     lcd_hw_write_line(2, "");
     lcd_hw_write_line(3, "");

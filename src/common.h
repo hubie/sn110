@@ -10,6 +10,14 @@
 
 #include <stdint.h>
 
+/* Firmware version — single source of truth for LOG and LCD splash */
+#define FW_VERSION "0.3.0"
+
+/* Source timeout — source considered lost after 2.5s of no packets.
+ * Protocol-agnostic: applies to sACN, Art-Net, and ShowNet alike.
+ * Used by dmx_output_cycle() and LCD state population. */
+#define SOURCE_TIMEOUT_MS   2500
+
 /* DMX constants */
 #define DMX_UNIVERSE_SIZE   512
 #define DMX_MAX_PORTS       2

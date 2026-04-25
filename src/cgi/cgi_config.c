@@ -238,7 +238,7 @@ static void emit_html_form(const node_config_t *cfg)
     printf("<fieldset><legend>LCD</legend>\n");
 
     printf("<div class=\"row\"><label>Contrast</label>"
-           "<input type=\"number\" name=\"lcd_contrast\" value=\"%d\" min=\"0\" max=\"255\"></div>\n",
+           "<input type=\"number\" name=\"lcd_contrast\" value=\"%d\" min=\"0\" max=\"63\"></div>\n",
            cfg->lcd_contrast);
 
     printf("<div class=\"row\"><label>Backlight</label><div class=\"radio-group\">"

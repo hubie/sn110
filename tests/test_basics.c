@@ -902,7 +902,7 @@ static void test_config_save_strand_excludes_extensions(void) {
     config_defaults(&config);
     config.addr_mode = ADDR_MODE_STATIC;
     config.ip_addr = (192u << 24) | (168u << 16) | (0u << 8) | 71u;
-    config.lcd_contrast = 200;
+    config.lcd_contrast = 50;
     config.lcd_backlight = LCD_BACKLIGHT_AUTO;
     config.dmx_slot_monitor[0] = 42;
 
@@ -1040,7 +1040,7 @@ static void test_config_generate_ifup_dhcp_static(void) {
 static void test_config_lcd_defaults(void) {
     node_config_t config;
     config_defaults(&config);
-    assert(config.lcd_contrast == 128);
+    assert(config.lcd_contrast == 32);
     assert(config.lcd_backlight == LCD_BACKLIGHT_ON);
 }
 
@@ -1051,14 +1051,14 @@ static void test_config_lcd_save_load(void) {
     config_defaults(&orig);
     orig.addr_mode = ADDR_MODE_STATIC;
     orig.ip_addr = (10 << 24) | 1;
-    orig.lcd_contrast = 200;
+    orig.lcd_contrast = 50;
     orig.lcd_backlight = LCD_BACKLIGHT_AUTO;
     orig.dmx_slot_monitor[0] = 100;
     orig.dmx_slot_monitor[1] = 256;
 
     assert(config_save(path, &orig) == 0);
     assert(config_load(path, &loaded) == 0);
-    assert(loaded.lcd_contrast == 200);
+    assert(loaded.lcd_contrast == 50);
     assert(loaded.lcd_backlight == LCD_BACKLIGHT_AUTO);
     assert(loaded.dmx_slot_monitor[0] == 100);
     assert(loaded.dmx_slot_monitor[1] == 256);
@@ -1091,11 +1091,11 @@ static void test_cgi_parse_lcd_fields(void) {
     node_config_t cfg;
     config_defaults(&cfg);
 
-    parse_formdata("lcd_contrast=200&lcd_backlight=auto"
+    parse_formdata("lcd_contrast=50&lcd_backlight=auto"
                    "&slot_monitor_0=42&slot_monitor_1=256",
                    &cfg);
 
-    assert(cfg.lcd_contrast == 200);
+    assert(cfg.lcd_contrast == 50);
     assert(cfg.lcd_backlight == LCD_BACKLIGHT_AUTO);
     assert(cfg.dmx_slot_monitor[0] == 42);
     assert(cfg.dmx_slot_monitor[1] == 256);
@@ -1118,9 +1118,9 @@ static void test_cgi_parse_integer_bounds(void) {
     parse_formdata("slot_monitor_0=600", &cfg);
     assert(cfg.dmx_slot_monitor[0] == 512);
 
-    /* LCD contrast clamped to 0-255 */
+    /* LCD contrast clamped to 0-63 (hardware max) */
     parse_formdata("lcd_contrast=300", &cfg);
-    assert(cfg.lcd_contrast == 255);
+    assert(cfg.lcd_contrast == 63);
 }
 
 static void test_config_mac_hex_parsing(void) {

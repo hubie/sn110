@@ -22,7 +22,9 @@
  * which may not exist in the minimal uClinux libc. */
 int ioctl(int fd, unsigned long request, ...);
 
-void lcd_hw_write(int col, int row, const char *text)
+/* Low-level cmd 7 write. Bypasses the line change cache —
+ * only lcd_hw_write_line() benefits from change detection. */
+static void lcd_hw_write(int col, int row, const char *text)
 {
     char buf[48];
     int fd, len;
@@ -43,10 +45,17 @@ void lcd_hw_write(int col, int row, const char *text)
     close(fd);
 }
 
+/* Previous line contents — skip ioctl when unchanged */
+static char prev_lines[LCD_ROWS][LCD_COLS + 1];
+static int  prev_valid = 0;  /* set to 0 on clear */
+
 void lcd_hw_write_line(int row, const char *text)
 {
     char line[LCD_COLS + 1];
     int len, i;
+
+    if (row < 0 || row >= LCD_ROWS)
+        return;
 
     len = strlen(text);
     if (len > LCD_COLS)
@@ -56,6 +65,12 @@ void lcd_hw_write_line(int row, const char *text)
         line[i] = ' ';
     line[LCD_COLS] = '\0';
 
+    /* Skip write if line hasn't changed */
+    if (prev_valid && memcmp(prev_lines[row], line, LCD_COLS) == 0)
+        return;
+
+    memcpy(prev_lines[row], line, LCD_COLS + 1);
+    prev_valid = 1;
     lcd_hw_write(0, row, line);
 }
 
@@ -65,6 +80,7 @@ void lcd_hw_clear_chars(void)
     if (fd < 0) return;
     ioctl(fd, LCD_IOC_CLEAR, 0);
     close(fd);
+    prev_valid = 0;  /* force next write_line to go through */
 }
 
 void lcd_hw_clear_pixels(void)

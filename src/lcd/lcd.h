@@ -26,7 +26,7 @@
 typedef struct {
     /* Network identity */
     char     hostname[16];        /* empty string = no hostname configured */
-    uint32_t ip_addr;             /* 0 = not yet assigned (network byte order) */
+    uint32_t ip_addr;             /* 0 = not yet assigned (host byte order) */
     uint8_t  mac[6];
     uint8_t  addr_mode;           /* ADDR_MODE_* from common.h */
     int      link_up;             /* 1 = Ethernet link active, 0 = down */

@@ -33,6 +33,12 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#ifndef HOST_BUILD
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#endif
+
 /* PID file path — matches what /etc/rc watchdog checks */
 #define PID_FILE "/var/run/lxnetdmx.pid"
 
@@ -67,7 +73,9 @@ static uint32_t g_dmx_in_zero_count = 0;
 static uint32_t g_sacn_tx_count = 0;
 static int g_dmx_in_last_read = 0;
 
-/* Hold timer tracking — set when source timeout first detected per port */
+/* Hold timer tracking — set when source timeout first detected per port.
+ * Read by both dmx_output_cycle() (blackout decision) and LCD state
+ * population (hold countdown display). Keep semantics in sync. */
 static uint32_t g_hold_start_ms[DMX_MAX_PORTS];
 
 /* LCD update pacing */
@@ -185,6 +193,73 @@ static void remove_pid_file(void)
 #endif
 
 /* ========================================================================= */
+/* Network interface detection (device only)                                 */
+/* ========================================================================= */
+
+#ifndef HOST_BUILD
+/*
+ * Query the IP address of eth0 via SIOCGIFADDR.
+ * Returns host-byte-order IP, or 0 if not yet assigned.
+ */
+static uint32_t detect_ip(void)
+{
+    struct ifreq ifr;
+    struct sockaddr_in *sin;
+    int fd;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0)
+        return 0;
+
+    memset(&ifr, 0, sizeof(ifr));
+    memcpy(ifr.ifr_name, "eth0", 5);
+
+    if (ioctl(fd, SIOCGIFADDR, &ifr) < 0) {
+        close(fd);
+        return 0;
+    }
+    close(fd);
+
+    sin = (struct sockaddr_in *)&ifr.ifr_addr;
+    return ntohl(sin->sin_addr.s_addr);
+}
+
+/*
+ * Check whether eth0 link is up via SIOCGIFFLAGS / IFF_RUNNING.
+ * Returns 1 if link is up, 0 otherwise.
+ *
+ * Note: IFF_RUNNING may not be supported on Linux 2.0 / NS7520.
+ * Falls back to IFF_UP if IFF_RUNNING is not set but IFF_UP is.
+ * Needs on-device verification.
+ */
+static int detect_link(void)
+{
+    struct ifreq ifr;
+    int fd;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0)
+        return 1; /* assume up if we can't check */
+
+    memset(&ifr, 0, sizeof(ifr));
+    memcpy(ifr.ifr_name, "eth0", 5);
+
+    if (ioctl(fd, SIOCGIFFLAGS, &ifr) < 0) {
+        close(fd);
+        return 1; /* assume up if ioctl fails */
+    }
+    close(fd);
+
+    /* Prefer IFF_RUNNING (carrier detect), fall back to IFF_UP */
+    if (ifr.ifr_flags & IFF_RUNNING)
+        return 1;
+    if (ifr.ifr_flags & IFF_UP)
+        return 1;
+    return 0;
+}
+#endif
+
+/* ========================================================================= */
 /* DMX output — write fresh data to hardware ports                           */
 /* ========================================================================= */
 
@@ -240,7 +315,7 @@ static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
             /* Check for source timeout → hold → blackout */
             uint32_t age = t - g_dmx_out[i].last_update_ms;
             int source_lost = (g_dmx_out[i].last_update_ms > 0) &&
-                              (age > SACN_TIMEOUT_MS);
+                              (age > SOURCE_TIMEOUT_MS);
 
             if (source_lost) {
                 /* Start hold timer on first detection */
@@ -335,7 +410,7 @@ int main(int argc, char *argv[])
     uint32_t dmx_last_write[DMX_MAX_PORTS] = {0};
     int i;
 
-    LOG("sn110dmx v0.3.0 — Open-source DMX gateway");
+    LOG("sn110dmx v" FW_VERSION " — Open-source DMX gateway");
     LOG("Strand SN110 multi-protocol firmware");
 
     /* Parse optional config path argument */
@@ -529,10 +604,25 @@ int main(int argc, char *argv[])
                 memset(&ls, 0, sizeof(ls));
                 memcpy(ls.hostname, g_config.hostname,
                        sizeof(ls.hostname));
+                ls.hostname[sizeof(ls.hostname) - 1] = '\0';
                 ls.ip_addr = g_config.ip_addr;
                 memcpy(ls.mac, g_config.mac, 6);
                 ls.addr_mode = g_config.addr_mode;
-                ls.link_up = 1; /* TODO: detect via SIOCGIFFLAGS */
+                ls.link_up = detect_link();
+
+                /* DHCP: poll for newly-acquired IP */
+                if (ls.ip_addr == 0) {
+                    uint32_t detected = detect_ip();
+                    if (detected != 0) {
+                        ls.ip_addr = detected;
+                        g_config.ip_addr = detected;
+                        LOG("DHCP acquired IP: %u.%u.%u.%u",
+                            (detected >> 24) & 0xff,
+                            (detected >> 16) & 0xff,
+                            (detected >> 8)  & 0xff,
+                            detected & 0xff);
+                    }
+                }
 
                 for (p = 0; p < DMX_MAX_PORTS; p++) {
                     uint32_t age;
@@ -544,7 +634,7 @@ int main(int argc, char *argv[])
                         age = (g_dmx_out[p].last_update_ms > 0)
                               ? (now - g_dmx_out[p].last_update_ms) : 0;
                         ls.port[p].live = (g_dmx_out[p].last_update_ms > 0)
-                                          && (age < SACN_TIMEOUT_MS);
+                                          && (age < SOURCE_TIMEOUT_MS);
                         ls.port[p].held = (g_hold_start_ms[p] > 0);
                         if (ls.port[p].held) {
                             uint32_t elapsed = now - g_hold_start_ms[p];

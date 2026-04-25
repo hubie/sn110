@@ -28,13 +28,6 @@
 #define LCD_IOC_BACKLIGHT ((1U << 30) | (4 << 16)  | ('l' << 8) | 18) /* cmd 18: backlight */
 
 /*
- * Write a NUL-terminated string at (col, row) via ioctl cmd 7.
- * Max 43 characters (48-byte buffer minus 4-byte header minus NUL).
- * Positions before col and after the NUL terminator are untouched.
- */
-void lcd_hw_write(int col, int row, const char *text);
-
-/*
  * Write a full line (pad/truncate to LCD_COLS) at the given row.
  * Equivalent to lcd_hw_write(0, row, <16-char padded string>).
  */
