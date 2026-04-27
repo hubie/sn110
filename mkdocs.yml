@@ -1,0 +1,84 @@
+site_name: SN110 Open Firmware
+site_description: Open-source DMX gateway firmware for Strand ShowNet SN110 nodes
+site_url: https://hubie.github.io/sn110/
+repo_url: https://github.com/hubie/sn110
+repo_name: hubie/sn110
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Building: getting-started/building.md
+    - Deploying: getting-started/deploying.md
+    - Contributing: getting-started/contributing.md
+  - Hardware Reference:
+    - Board Overview: hardware/board-overview.md
+    - DMX Ports: hardware/dmx-ports.md
+    - LCD Display: hardware/lcd-display.md
+    - Ethernet & Network: hardware/ethernet.md
+    - Capacitor Replacement: hardware/capacitor-replacement.md
+  - Firmware Guide:
+    - Architecture: firmware/architecture.md
+    - LCD Module: firmware/lcd-module.md
+    - Protocol Stack: firmware/protocols.md
+    - Configuration: firmware/config-system.md
+  - Recovery:
+    - Network Recovery (BOOTP/TFTP): recovery/network-recovery.md
+    - JTAG Recovery: recovery/jtag-recovery.md
+  - Reference:
+    - Kernel Quirks: reference/kernel-quirks.md
+    - Flash Filesystem: reference/flash-filesystem.md
+    - Reverse Engineering Log: reference/reverse-engineering-log.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/hubie/sn110
