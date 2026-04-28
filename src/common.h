@@ -13,6 +13,11 @@
 /* Firmware version — single source of truth for LOG and LCD splash */
 #define FW_VERSION "0.3.0"
 
+/* Build date — set by Makefile via -D, fallback for manual builds */
+#ifndef FW_BUILD_DATE
+#define FW_BUILD_DATE "unknown"
+#endif
+
 /* Source timeout — source considered lost after 2.5s of no packets.
  * Protocol-agnostic: applies to sACN, Art-Net, and ShowNet alike.
  * Used by dmx_output_cycle() and LCD state population. */

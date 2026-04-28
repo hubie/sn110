@@ -26,6 +26,14 @@ echo sn110-web: Installing /cgi-bin/cfgpost.cgi...
 cp /tmp/cfgpost.cgi /cgi-bin/cfgpost.cgi
 chmod 755 /cgi-bin/cfgpost.cgi
 
+echo sn110-web: Installing /cgi-bin/fwget.cgi...
+cp /tmp/fwget.cgi /cgi-bin/fwget.cgi
+chmod 755 /cgi-bin/fwget.cgi
+
+echo sn110-web: Installing /cgi-bin/fwpost.cgi...
+cp /tmp/fwpost.cgi /cgi-bin/fwpost.cgi
+chmod 755 /cgi-bin/fwpost.cgi
+
 # Overwrite landing page
 echo sn110-web: Installing /index.html...
 cp /tmp/index.html /index.html
@@ -34,6 +42,8 @@ cp /tmp/index.html /index.html
 rm /tmp/cgi_config
 rm /tmp/cfgget.cgi
 rm /tmp/cfgpost.cgi
+rm /tmp/fwget.cgi
+rm /tmp/fwpost.cgi
 rm /tmp/index.html
 
 echo sn110-web: Web UI installation complete!
