@@ -5,7 +5,7 @@
 ### ✅ Completed
 - Device investigation, profiling, full firmware backup (33 files)
 - **DMX driver reverse engineering** — ioctl `_IOW('d', 1, 16-byte struct)` = 0x40106401
-  - Modes: 0=OFF, 1=RAW, 2=TX, 3=RX (corrected from original guesses)
+  - Modes: 0=OFF, 1=TX, 2=RX, 3=RAW (corrected via dmxtst binary disassembly)
   - Data I/O via read()/write() of 512-byte DMX frames
   - Full analysis in `docs/dmx-interface.md`
 - All protocol implementations: sACN (E1.31), Art-Net, ShowNet (with RLE decoder)

@@ -124,7 +124,7 @@ static void parse_formdata(const char *body, node_config_t *cfg)
         else if (strcmp(key, "addr_mode") == 0)
             cfg->addr_mode = parse_addr_mode(val);
         else if (strcmp(key, "lcd_contrast") == 0)
-            cfg->lcd_contrast = _clamp(atoi(val), 0, 255);
+            cfg->lcd_contrast = _clamp(atoi(val), 0, 63);
         else if (strcmp(key, "lcd_backlight") == 0)
             cfg->lcd_backlight = parse_backlight(val);
         else if (strcmp(key, "slot_monitor_0") == 0)

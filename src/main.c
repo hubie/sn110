@@ -26,11 +26,18 @@
 #include "artnet/artnet.h"
 #include "shownet/shownet.h"
 #include "config/config.h"
+#include "lcd/lcd.h"
 
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
+
+#ifndef HOST_BUILD
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#endif
 
 /* PID file path — matches what /etc/rc watchdog checks */
 #define PID_FILE "/var/run/lxnetdmx.pid"
@@ -65,6 +72,15 @@ static uint32_t g_dmx_tx_count = 0;
 static uint32_t g_dmx_in_zero_count = 0;
 static uint32_t g_sacn_tx_count = 0;
 static int g_dmx_in_last_read = 0;
+
+/* Hold timer tracking — set when source timeout first detected per port.
+ * Read by both dmx_output_cycle() (blackout decision) and LCD state
+ * population (hold countdown display). Keep semantics in sync. */
+static uint32_t g_hold_start_ms[DMX_MAX_PORTS];
+
+/* LCD update pacing */
+#define LCD_UPDATE_MS 1000
+static uint32_t g_lcd_last_update_ms = 0;
 
 /* ========================================================================= */
 /* Timestamp helper                                                          */
@@ -110,6 +126,7 @@ static void handle_sacn_packet(const sacn_packet_t *pkt)
 static void handle_artnet_packet(const artnet_dmx_packet_t *pkt)
 {
     int port;
+    g_artnet_rx_count++;
     for (port = 0; port < DMX_MAX_PORTS; port++) {
         if (g_config.ports[port].universe != pkt->universe)
             continue;
@@ -177,6 +194,76 @@ static void remove_pid_file(void)
 #endif
 
 /* ========================================================================= */
+/* Network interface detection (device only)                                 */
+/* ========================================================================= */
+
+#ifndef HOST_BUILD
+/*
+ * Query the IP address of eth0 via SIOCGIFADDR.
+ * Returns host-byte-order IP, or 0 if not yet assigned.
+ */
+static uint32_t detect_ip(void)
+{
+    struct ifreq ifr;
+    struct sockaddr_in *sin;
+    int fd;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0)
+        return 0;
+
+    memset(&ifr, 0, sizeof(ifr));
+    memcpy(ifr.ifr_name, "eth0", 5);
+
+    if (ioctl(fd, SIOCGIFADDR, &ifr) < 0) {
+        close(fd);
+        return 0;
+    }
+    close(fd);
+
+    sin = (struct sockaddr_in *)&ifr.ifr_addr;
+    return ntohl(sin->sin_addr.s_addr);
+}
+
+/*
+ * Check whether eth0 link is up via SIOCGIFFLAGS / IFF_RUNNING.
+ * Returns 1 if link is up, 0 otherwise.
+ *
+ * IFF_RUNNING tracks carrier (cable plugged in) on modern Linux.
+ * On Linux 2.0 / NS7520 it may not be supported — if so, we fall
+ * back to IFF_UP, which is always set for a configured interface
+ * and cannot detect cable loss. This means MODE_LINK_DOWN may be
+ * unreachable on this hardware. Needs on-device verification.
+ */
+static int detect_link(void)
+{
+    struct ifreq ifr;
+    int fd;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0)
+        return 1; /* assume up if we can't check */
+
+    memset(&ifr, 0, sizeof(ifr));
+    memcpy(ifr.ifr_name, "eth0", 5);
+
+    if (ioctl(fd, SIOCGIFFLAGS, &ifr) < 0) {
+        close(fd);
+        return 1; /* assume up if ioctl fails */
+    }
+    close(fd);
+
+    if (ifr.ifr_flags & IFF_RUNNING)
+        return 1;
+    /* IFF_UP is always set for a configured interface — this fallback
+     * means we can't detect cable loss if IFF_RUNNING is unsupported. */
+    if (ifr.ifr_flags & IFF_UP)
+        return 1;
+    return 0;
+}
+#endif
+
+/* ========================================================================= */
 /* DMX output — write fresh data to hardware ports                           */
 /* ========================================================================= */
 
@@ -224,21 +311,33 @@ static void dmx_output_cycle(const dmx_ops_t *ops, int *fds,
         if (g_dmx_out[i].last_update_ms > last_write[i]) {
             memcpy(frame, g_dmx_out[i].data, DMX_UNIVERSE_SIZE);
             last_write[i] = g_dmx_out[i].last_update_ms;
+            g_hold_start_ms[i] = 0; /* source recovered — reset hold */
 
             dmx_tx_write(ops, fds, i, frame, DMX_UNIVERSE_SIZE);
             g_dmx_tx_count++;
         } else {
-            /* Check for source timeout */
+            /* Check for source timeout → hold → blackout */
             uint32_t age = t - g_dmx_out[i].last_update_ms;
-            int timed_out = (g_dmx_out[i].last_update_ms > 0) &&
-                            (age > (uint32_t)g_config.dmx_hold_time * 1000);
+            int source_lost = (g_dmx_out[i].last_update_ms > 0) &&
+                              (age > SOURCE_TIMEOUT_MS);
 
-            if (timed_out) {
-                memset(g_dmx_out[i].data, 0, DMX_UNIVERSE_SIZE);
-                g_dmx_out[i].last_update_ms = 0;
-                g_dmx_out[i].priority = 0;
-                memset(frame, 0, DMX_UNIVERSE_SIZE);
-                dmx_tx_write(ops, fds, i, frame, DMX_UNIVERSE_SIZE);
+            if (source_lost) {
+                /* Start hold timer on first detection */
+                if (g_hold_start_ms[i] == 0)
+                    g_hold_start_ms[i] = t;
+
+                /* Check if hold period expired */
+                if ((t - g_hold_start_ms[i]) >
+                    (uint32_t)g_config.dmx_hold_time * 1000) {
+                    /* Blackout */
+                    memset(g_dmx_out[i].data, 0, DMX_UNIVERSE_SIZE);
+                    g_dmx_out[i].last_update_ms = 0;
+                    g_dmx_out[i].priority = 0;
+                    g_hold_start_ms[i] = 0;
+                    memset(frame, 0, DMX_UNIVERSE_SIZE);
+                    dmx_tx_write(ops, fds, i, frame, DMX_UNIVERSE_SIZE);
+                }
+                /* else: still in hold period, keep outputting last data */
             }
         }
     }
@@ -306,6 +405,36 @@ static void dmx_input_cycle(const dmx_ops_t *ops, int *fds)
 /* Main — single-threaded event loop                                         */
 /* ========================================================================= */
 
+
+/* ========================================================================= */
+/* DHCP IP polling (device only)                                             */
+/* ========================================================================= */
+
+#ifndef HOST_BUILD
+/*
+ * Poll eth0 for a newly-acquired DHCP IP address.
+ * Updates g_config.ip_addr when an address appears.
+ * Called once per second from the main loop, before LCD snapshot.
+ */
+static void poll_dhcp_ip(void)
+{
+    uint32_t detected;
+
+    if (g_config.ip_addr != 0)
+        return; /* already have an IP */
+
+    detected = detect_ip();
+    if (detected != 0) {
+        g_config.ip_addr = detected;
+        LOG("DHCP acquired IP: %u.%u.%u.%u",
+            (detected >> 24) & 0xff,
+            (detected >> 16) & 0xff,
+            (detected >> 8)  & 0xff,
+            detected & 0xff);
+    }
+}
+#endif
+
 int main(int argc, char *argv[])
 {
     const char *config_path = CONFIG_FILE_PATH;
@@ -315,7 +444,7 @@ int main(int argc, char *argv[])
     uint32_t dmx_last_write[DMX_MAX_PORTS] = {0};
     int i;
 
-    LOG("sn110dmx v0.2.0 — Open-source DMX gateway");
+    LOG("sn110dmx v" FW_VERSION " — Open-source DMX gateway");
     LOG("Strand SN110 multi-protocol firmware");
 
     /* Parse optional config path argument */
@@ -342,6 +471,7 @@ int main(int argc, char *argv[])
     memset(g_dmx_in, 0, sizeof(g_dmx_in));
     memset(g_sacn_tx_active, 0, sizeof(g_sacn_tx_active));
     memset(g_dmx_in_last_send, 0, sizeof(g_dmx_in_last_send));
+    memset(g_hold_start_ms, 0, sizeof(g_hold_start_ms));
 
     /* Install signal handlers for clean shutdown */
     signal(SIGTERM, signal_handler);
@@ -350,6 +480,8 @@ int main(int argc, char *argv[])
 
 #ifndef HOST_BUILD
     write_pid_file();
+    lcd_init(g_config.lcd_contrast, g_config.lcd_backlight);
+    g_lcd_last_update_ms = now_ms();
 #endif
 
     /* Initialize protocol sockets */
@@ -358,7 +490,7 @@ int main(int argc, char *argv[])
         if (sacn_sock < 0)
             LOG("WARNING: failed to init sACN socket");
     } else if (g_config.active_protocol == PROTO_ARTNET) {
-        artnet_sock = artnet_init();
+        artnet_sock = artnet_init(g_config.ip_addr, g_config.mac);
         if (artnet_sock < 0)
             LOG("WARNING: failed to init Art-Net");
     } else if (g_config.active_protocol == PROTO_SHOWNET) {
@@ -491,6 +623,57 @@ int main(int argc, char *argv[])
                 }
             }
         }
+
+        /* Refresh LCD status display once per second */
+#ifndef HOST_BUILD
+        {
+            uint32_t now = now_ms();
+            if (now - g_lcd_last_update_ms >= LCD_UPDATE_MS) {
+                lcd_state_t ls;
+                int p;
+
+                g_lcd_last_update_ms = now;
+
+                /* Populate LCD state snapshot */
+                memset(&ls, 0, sizeof(ls));
+                memcpy(ls.hostname, g_config.hostname,
+                       sizeof(ls.hostname));
+                ls.hostname[sizeof(ls.hostname) - 1] = '\0';
+                poll_dhcp_ip();
+                ls.ip_addr = g_config.ip_addr;
+                memcpy(ls.mac, g_config.mac, 6);
+                ls.addr_mode = g_config.addr_mode;
+                ls.link_up = detect_link();
+
+                for (p = 0; p < DMX_MAX_PORTS; p++) {
+                    uint32_t age;
+                    ls.port[p].mode = g_config.ports[p].mode;
+                    ls.port[p].universe = g_config.ports[p].universe;
+
+                    if (g_config.ports[p].mode == DMX_MODE_TX) {
+                        /* TX port: receiving sACN → outputting DMX */
+                        age = (g_dmx_out[p].last_update_ms > 0)
+                              ? (now - g_dmx_out[p].last_update_ms) : 0;
+                        ls.port[p].live = (g_dmx_out[p].last_update_ms > 0)
+                                          && (age < SOURCE_TIMEOUT_MS);
+                        ls.port[p].held = (g_hold_start_ms[p] > 0);
+                        if (ls.port[p].held) {
+                            uint32_t elapsed = now - g_hold_start_ms[p];
+                            uint32_t total = (uint32_t)g_config.dmx_hold_time * 1000;
+                            ls.port[p].hold_remaining_ms =
+                                (elapsed < total) ? (total - elapsed) : 0;
+                        }
+                    } else if (g_config.ports[p].mode == DMX_MODE_RX) {
+                        /* RX port: reading DMX → sending sACN */
+                        ls.port[p].live = (g_dmx_in[p].last_update_ms > 0);
+                    }
+                    /* DMX_MODE_OFF: all zeros from memset */
+                }
+
+                lcd_update(&ls);
+            }
+        }
+#endif
     }
 
     /* Shutdown */
@@ -508,6 +691,7 @@ int main(int argc, char *argv[])
     }
 
 #ifndef HOST_BUILD
+    lcd_shutdown();
     remove_pid_file();
 #endif
 

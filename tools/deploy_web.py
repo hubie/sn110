@@ -81,7 +81,7 @@ def main():
         ftp.storbinary("STOR /tmp/cgi_config", f)
     print(f"  cgi_config ({bflt_size} bytes) -> /tmp/")
 
-    for name in ["cfgget.cgi", "cfgpost.cgi", "index.html"]:
+    for name in ["cfgget.cgi", "cfgpost.cgi", "fwget.cgi", "fwpost.cgi", "index.html"]:
         path = f"tools/web/{name}"
         with open(path, "rb") as f:
             ftp.storbinary(f"STOR /tmp/{name}", f)
@@ -108,6 +108,8 @@ def main():
         ("/tmp/cgi_config", "/usr/bin/cgi_config"),
         ("/tmp/cfgget.cgi", "/cgi-bin/cfgget.cgi"),
         ("/tmp/cfgpost.cgi", "/cgi-bin/cfgpost.cgi"),
+        ("/tmp/fwget.cgi", "/cgi-bin/fwget.cgi"),
+        ("/tmp/fwpost.cgi", "/cgi-bin/fwpost.cgi"),
         ("/tmp/index.html", "/index.html"),
     ]:
         r = telnet_cmd(tn, f"cp {src} {dst}")

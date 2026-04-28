@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 
@@ -103,15 +104,17 @@ static void emit_css(void)
     printf("</style>\n");
 }
 
-static void emit_html_form(const node_config_t *cfg)
+static void emit_header(const node_config_t *cfg, const char *subtitle)
 {
     printf("<!DOCTYPE html>\n<html><head><title>");
     html_escape(cfg->hostname);
-    printf(" Configuration</title>\n");
+    if (subtitle) {
+        printf(" — ");
+        html_escape(subtitle);
+    }
+    printf("</title>\n");
     emit_css();
     printf("</head><body>\n");
-
-    /* Header bar with device name + MAC */
     printf("<div class=\"header\">\n");
     printf("<h1>");
     html_escape(cfg->hostname);
@@ -120,6 +123,23 @@ static void emit_html_form(const node_config_t *cfg)
            cfg->mac[0], cfg->mac[1], cfg->mac[2],
            cfg->mac[3], cfg->mac[4], cfg->mac[5]);
     printf("</div>\n");
+}
+
+static void emit_nav(const char *current_page)
+{
+    printf("<div style=\"max-width:560px;margin:12px auto 0;padding:0 16px;"
+           "font-size:0.9em\">\n");
+    if (strcmp(current_page, "config") == 0)
+        printf("<a href=\"/cgi-bin/fwget.cgi\">Firmware</a>\n");
+    else
+        printf("<a href=\"/cgi-bin/cfgget.cgi\">Configuration</a>\n");
+    printf("</div>\n");
+}
+
+static void emit_html_form(const node_config_t *cfg)
+{
+    emit_header(cfg, "Configuration");
+    emit_nav("config");
 
     printf("<form method=\"POST\" action=\"/cgi-bin/cfgpost.cgi\">\n");
 
@@ -238,7 +258,7 @@ static void emit_html_form(const node_config_t *cfg)
     printf("<fieldset><legend>LCD</legend>\n");
 
     printf("<div class=\"row\"><label>Contrast</label>"
-           "<input type=\"number\" name=\"lcd_contrast\" value=\"%d\" min=\"0\" max=\"255\"></div>\n",
+           "<input type=\"number\" name=\"lcd_contrast\" value=\"%d\" min=\"0\" max=\"63\"></div>\n",
            cfg->lcd_contrast);
 
     printf("<div class=\"row\"><label>Backlight</label><div class=\"radio-group\">"
@@ -279,14 +299,135 @@ static void emit_html_form(const node_config_t *cfg)
     printf("</body></html>\n");
 }
 
-int main(void)
+/* ── Firmware management page ─────────────────────────────────────── */
+
+static void emit_fw_page(const node_config_t *cfg)
+{
+    emit_header(cfg, "Firmware");
+    emit_nav("firmware");
+
+    printf("<form method=\"POST\" action=\"/cgi-bin/fwpost.cgi\" "
+           "style=\"max-width:560px;margin:20px auto;padding:0 16px\">\n");
+
+    /* Firmware info */
+    printf("<fieldset><legend>Firmware</legend>\n");
+    printf("<div class=\"row\"><label>Version</label>"
+           "<span style=\"flex:1\">sn110dmx v" FW_VERSION "</span></div>\n");
+    printf("<div class=\"row\"><label>Build date</label>"
+           "<span style=\"flex:1\">" FW_BUILD_DATE "</span></div>\n");
+    printf("</fieldset>\n");
+
+    /* Install */
+    printf("<fieldset><legend>Install</legend>\n");
+    printf("<p style=\"padding:4px 0 8px;font-size:0.9em;color:#b0b0c0\">"
+           "Upload a new firmware binary to <code>/tmp/sn110dmx</code> via FTP, "
+           "then click Install.</p>\n");
+    printf("<input type=\"submit\" name=\"action\" value=\"Install Firmware\">\n");
+    printf("</fieldset>\n");
+
+    printf("</form>\n");
+
+    /* Updates link */
+    printf("<div style=\"max-width:560px;margin:0 auto;padding:0 16px 24px;"
+           "text-align:center\">\n");
+    printf("<a href=\"https://github.com/hubie/sn110/releases\" "
+           "target=\"_blank\">Check for updates</a>\n");
+    printf("</div>\n");
+
+    printf("</body></html>\n");
+}
+
+static void emit_fw_confirm(const node_config_t *cfg)
+{
+    emit_header(cfg, "Confirm Install");
+    emit_nav("firmware");
+
+    printf("<form method=\"POST\" action=\"/cgi-bin/fwpost.cgi\" "
+           "style=\"max-width:560px;margin:20px auto;padding:0 16px\">\n");
+
+    printf("<fieldset><legend>Confirm Install</legend>\n");
+    printf("<p style=\"padding:8px 0;font-size:0.95em\">This will:</p>\n");
+    printf("<ul style=\"padding:0 0 8px 20px;font-size:0.9em;color:#b0b0c0\">\n");
+    printf("<li>Stop the running daemon</li>\n");
+    printf("<li>Start the firmware uploaded to /tmp/</li>\n");
+    printf("<li>DMX output will be interrupted briefly</li>\n");
+    printf("</ul>\n");
+    printf("<input type=\"hidden\" name=\"action\" value=\"confirm\">\n");
+    printf("<input type=\"submit\" value=\"Confirm Install\">\n");
+    printf("</fieldset>\n");
+    printf("</form>\n");
+
+    printf("<div style=\"max-width:560px;margin:0 auto;padding:0 16px;"
+           "text-align:center\">\n");
+    printf("<a href=\"/cgi-bin/fwget.cgi\">Cancel</a>\n");
+    printf("</div>\n");
+
+    printf("</body></html>\n");
+}
+
+static void emit_fw_triggered(const node_config_t *cfg)
+{
+    emit_header(cfg, "Installing");
+
+    printf("<meta http-equiv=\"refresh\" content=\"15;url=/cgi-bin/fwget.cgi\">\n");
+
+    printf("<div style=\"max-width:560px;margin:20px auto;padding:0 16px\">\n");
+    printf("<fieldset><legend>Status</legend>\n");
+    printf("<p style=\"padding:16px;font-size:1.1em;text-align:center\">"
+           "Install triggered.</p>\n");
+    printf("<p class=\"note\" style=\"margin-left:0;text-align:center\">"
+           "The device will restart within 10 seconds.<br>"
+           "This page will refresh automatically.</p>\n");
+    printf("</fieldset>\n");
+    printf("</div>\n");
+
+    printf("</body></html>\n");
+}
+
+static void handle_fw_post(const node_config_t *cfg)
+{
+    char *cl_str = getenv("CONTENT_LENGTH");
+    int content_length = cl_str ? atoi(cl_str) : 0;
+    char body[256];
+    int is_confirm = 0;
+
+    if (content_length > 0 && content_length < (int)sizeof(body) - 1) {
+        int n = read(0, body, content_length);
+        body[n > 0 ? n : 0] = '\0';
+    } else {
+        body[0] = '\0';
+    }
+
+    /* Check if this is the confirmation step */
+    if (strstr(body, "action=confirm"))
+        is_confirm = 1;
+
+    if (is_confirm) {
+        /* Create the install trigger file */
+        int fd = open("/tmp/install.arm", O_WRONLY | O_CREAT, 0644);
+        if (fd >= 0)
+            close(fd);
+        emit_fw_triggered(cfg);
+    } else {
+        emit_fw_confirm(cfg);
+    }
+}
+
+/* ── Main entry point ────────────────────────────────────────────── */
+
+int main(int argc, char **argv)
 {
     node_config_t cfg;
     static const uint8_t zero_mac[6] = {0};
     char *method = getenv("REQUEST_METHOD");
+    int fw_mode = 0;
 
     if (!method)
         method = "GET";
+
+    /* Dispatch: "cgi_config fw" → firmware page */
+    if (argc > 1 && strcmp(argv[1], "fw") == 0)
+        fw_mode = 1;
 
     config_load(CONFIG_FILE_PATH, &cfg);
 
@@ -294,6 +435,15 @@ int main(void)
     if (memcmp(cfg.mac, zero_mac, 6) == 0)
         read_iface_mac(cfg.mac);
 
+    if (fw_mode) {
+        if (strcmp(method, "POST") == 0)
+            handle_fw_post(&cfg);
+        else
+            emit_fw_page(&cfg);
+        return 0;
+    }
+
+    /* Config page */
     if (strcmp(method, "POST") == 0) {
         char *cl_str = getenv("CONTENT_LENGTH");
         int content_length = cl_str ? atoi(cl_str) : 0;
@@ -311,15 +461,8 @@ int main(void)
         config_save_strand(STRAND_CONFIG_PATH, &cfg);
         config_generate_ifup(IFUP_FILE_PATH, &cfg);
 
-        printf("<!DOCTYPE html>\n<html><head><title>");
-        html_escape(cfg.hostname);
-        printf(" — Saved</title>\n");
+        emit_header(&cfg, "Saved");
         printf("<meta http-equiv=\"refresh\" content=\"3;url=/cgi-bin/cfgget.cgi\">\n");
-        emit_css();
-        printf("</head><body>\n");
-        printf("<div class=\"header\"><h1>");
-        html_escape(cfg.hostname);
-        printf("</h1></div>\n");
         printf("<form style=\"text-align:center;padding-top:40px\">\n");
         printf("<fieldset><legend>Status</legend>\n");
         printf("<p style=\"padding:16px;font-size:1.1em\">Configuration saved.</p>\n");

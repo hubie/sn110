@@ -28,7 +28,8 @@ dump/
 2026-03-16_backups/
 
 # Third-party reference code (GPL — licensing mismatch with MIT repo)
-docs/reference/
+docs/reference/netarm_ser_module.h
+docs/reference/serial_netarm.c
 
 # Personal tool configs
 .claude/
@@ -42,3 +43,10 @@ todos/
 
 # Python cache
 tools/__pycache__/
+
+# MkDocs build output
+site/
+
+# Core dumps
+core
+*.core

@@ -26,11 +26,13 @@ OABI_CFLAGS = -Wall -Wextra -Os -g \
     -isystem src/oabi/include \
     -march=armv4t -marm \
     -fpic -msingle-pic-base -mpic-register=sl \
-    -static -no-pie
+    -static -no-pie \
+    -DFW_BUILD_DATE='"$(shell date +%Y-%m-%d)"'
 OABI_SRCS = src/oabi/crt0.S src/oabi/syscalls.S \
     src/oabi/minilib.c src/oabi/minisock.c src/oabi/minithread.c \
     src/main.c src/sacn/sacn.c src/sacn/sacn_tx.c src/artnet/artnet.c src/shownet/shownet.c \
-    src/dmx/dmx_real.c src/config/config.c
+    src/dmx/dmx_real.c src/config/config.c \
+    src/lcd/lcd.c src/lcd/lcd_hw.c
 
 # For host-based testing (macOS/Linux native)
 HOST_CC = gcc
@@ -85,7 +87,7 @@ FUZZ_CC := $(shell \
         echo clang; \
     fi)
 
-.PHONY: all clean test test-asan arm-test oabi-daemon bflt oabi-cgi cgi-bflt oabi-probe probe-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt docker-probe-bflt deploy-web fuzz-config fuzz-cgi help
+.PHONY: all clean test test-asan arm-test oabi-daemon bflt oabi-cgi cgi-bflt oabi-probe probe-bflt oabi-lcd-probe lcd-probe-bflt oabi-lcd-partial lcd-partial-bflt oabi-lcd-verify lcd-verify-bflt oabi-netsetup netsetup-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt docker-probe-bflt docker-lcd-probe-bflt docker-lcd-partial-bflt docker-lcd-verify-bflt docker-netsetup-bflt deploy-web fuzz-config fuzz-cgi help
 
 all: $(TARGET_BFLT)
 	@echo "Built $(TARGET_BFLT) ($$(wc -c < $(TARGET_BFLT)) bytes)"
@@ -237,6 +239,9 @@ build/cgi_config.bflt: build/cgi_config_reloc.elf tools/elf2bflt.py
 # RCGT probe — on-device UART register experiment tool
 PROBE_SRCS = src/oabi/crt0.S src/oabi/syscalls.S src/oabi/minilib.c tests/rcgt_probe.c
 
+# LCD probe — /dev/lcd0 interface discovery tool
+LCD_PROBE_SRCS = src/oabi/crt0.S src/oabi/syscalls.S src/oabi/minilib.c tests/lcd_probe.c
+
 oabi-probe: build/rcgt_probe_oabi
 
 build/rcgt_probe_oabi: $(PROBE_SRCS) | build
@@ -257,6 +262,100 @@ build/rcgt_probe.bflt: build/rcgt_probe_reloc.elf tools/elf2bflt.py
 
 docker-probe-bflt: docker-build
 	$(DOCKER_RUN) make probe-bflt
+
+oabi-lcd-probe: build/lcd_probe_oabi
+
+build/lcd_probe_oabi: $(LCD_PROBE_SRCS) | build
+	$(ARM_CC) $(OABI_CFLAGS) -o $@ $(LCD_PROBE_SRCS) $(LIBGCC)
+	@SIZE=$$(wc -c < $@); echo "LCD probe OABI ELF: $$SIZE bytes"
+
+build/lcd_probe_reloc.elf: $(LCD_PROBE_SRCS) src/oabi/flat.ld | build
+	$(ARM_CC) $(OABI_CFLAGS) \
+		-T src/oabi/flat.ld \
+		-Wl,--emit-relocs,--build-id=none \
+		-o $@ $(LCD_PROBE_SRCS) $(LIBGCC)
+
+lcd-probe-bflt: build/lcd_probe.bflt
+
+build/lcd_probe.bflt: build/lcd_probe_reloc.elf tools/elf2bflt.py
+	python3 tools/elf2bflt.py $< $@
+	@SIZE=$$(wc -c < $@); echo "LCD probe bFLT: $$SIZE bytes"
+
+docker-lcd-probe-bflt: docker-build
+	$(DOCKER_RUN) make lcd-probe-bflt
+
+# LCD partial write test — proves cursor+NUL partial update mechanism
+LCD_PARTIAL_SRCS = src/oabi/crt0.S src/oabi/syscalls.S src/oabi/minilib.c tests/lcd_partial.c
+
+oabi-lcd-partial: build/lcd_partial_oabi
+
+build/lcd_partial_oabi: $(LCD_PARTIAL_SRCS) | build
+	$(ARM_CC) $(OABI_CFLAGS) -o $@ $(LCD_PARTIAL_SRCS) $(LIBGCC)
+	@SIZE=$$(wc -c < $@); echo "LCD partial OABI ELF: $$SIZE bytes"
+
+build/lcd_partial_reloc.elf: $(LCD_PARTIAL_SRCS) src/oabi/flat.ld | build
+	$(ARM_CC) $(OABI_CFLAGS) \
+		-T src/oabi/flat.ld \
+		-Wl,--emit-relocs,--build-id=none \
+		-o $@ $(LCD_PARTIAL_SRCS) $(LIBGCC)
+
+lcd-partial-bflt: build/lcd_partial.bflt
+
+build/lcd_partial.bflt: build/lcd_partial_reloc.elf tools/elf2bflt.py
+	python3 tools/elf2bflt.py $< $@
+	@SIZE=$$(wc -c < $@); echo "LCD partial bFLT: $$SIZE bytes"
+
+docker-lcd-partial-bflt: docker-build
+	$(DOCKER_RUN) make lcd-partial-bflt
+
+# LCD verify test (character filter, contrast, backlight, pixel writes)
+LCD_VERIFY_SRCS = src/oabi/crt0.S src/oabi/syscalls.S src/oabi/minilib.c tests/lcd_verify.c
+
+oabi-lcd-verify: build/lcd_verify_oabi
+
+build/lcd_verify_oabi: $(LCD_VERIFY_SRCS) | build
+	$(ARM_CC) $(OABI_CFLAGS) -o $@ $(LCD_VERIFY_SRCS) $(LIBGCC)
+	@SIZE=$$(wc -c < $@); echo "LCD verify OABI ELF: $$SIZE bytes"
+
+build/lcd_verify_reloc.elf: $(LCD_VERIFY_SRCS) src/oabi/flat.ld | build
+	$(ARM_CC) $(OABI_CFLAGS) \
+		-T src/oabi/flat.ld \
+		-Wl,--emit-relocs,--build-id=none \
+		-o $@ $(LCD_VERIFY_SRCS) $(LIBGCC)
+
+lcd-verify-bflt: build/lcd_verify.bflt
+
+build/lcd_verify.bflt: build/lcd_verify_reloc.elf tools/elf2bflt.py
+	python3 tools/elf2bflt.py $< $@
+	@SIZE=$$(wc -c < $@); echo "LCD verify bFLT: $$SIZE bytes"
+
+docker-lcd-verify-bflt: docker-build
+	$(DOCKER_RUN) make lcd-verify-bflt
+
+# Network setup helper — DHCP link-local + config update
+NETSETUP_SRCS = src/oabi/crt0.S src/oabi/syscalls.S src/oabi/minilib.c \
+    src/config/config.c src/netsetup/netsetup.c
+
+oabi-netsetup: build/netsetup_oabi
+
+build/netsetup_oabi: $(NETSETUP_SRCS) | build
+	$(ARM_CC) $(OABI_CFLAGS) -o $@ $(NETSETUP_SRCS) $(LIBGCC)
+	@SIZE=$$(wc -c < $@); echo "netsetup OABI ELF: $$SIZE bytes"
+
+build/netsetup_reloc.elf: $(NETSETUP_SRCS) src/oabi/flat.ld | build
+	$(ARM_CC) $(OABI_CFLAGS) \
+		-T src/oabi/flat.ld \
+		-Wl,--emit-relocs,--build-id=none \
+		-o $@ $(NETSETUP_SRCS) $(LIBGCC)
+
+netsetup-bflt: build/netsetup.bflt
+
+build/netsetup.bflt: build/netsetup_reloc.elf tools/elf2bflt.py
+	python3 tools/elf2bflt.py $< $@
+	@SIZE=$$(wc -c < $@); echo "netsetup bFLT: $$SIZE bytes"
+
+docker-netsetup-bflt: docker-build
+	$(DOCKER_RUN) make netsetup-bflt
 
 # Minimal test bFLT (hello world — for verifying bFLT format)
 build/hello_device.bflt: tests/hello_device.c src/oabi/crt0.S src/oabi/flat.ld tools/elf2bflt.py | build

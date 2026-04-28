@@ -62,6 +62,7 @@ SYSCALL write, 4            /* ssize_t write(int fd, const void *buf, size_t n) 
 SYSCALL open, 5             /* int open(const char *path, int flags, mode_t mode) */
 SYSCALL close, 6            /* int close(int fd) */
 SYSCALL unlink, 10          /* int unlink(const char *path) */
+SYSCALL lseek, 19           /* off_t lseek(int fd, off_t offset, int whence) */
 SYSCALL ioctl, 54           /* int ioctl(int fd, unsigned long req, void *arg) */
 
 /* ================================================================== */
