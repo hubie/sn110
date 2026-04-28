@@ -10,8 +10,12 @@
 #define IFNAMSIZ 16
 
 /* ioctl request codes for network interfaces */
-#define SIOCGIFADDR   0x8915  /* Get interface address */
-#define SIOCGIFFLAGS  0x8913  /* Get interface flags */
+#define SIOCGIFFLAGS   0x8913  /* Get interface flags */
+#define SIOCGIFADDR    0x8915  /* Get interface address */
+#define SIOCSIFADDR    0x8916  /* Set interface address */
+#define SIOCGIFNETMASK 0x891b  /* Get netmask */
+#define SIOCSIFNETMASK 0x891c  /* Set netmask */
+#define SIOCGIFHWADDR  0x8927  /* Get hardware (MAC) address */
 
 /* Interface flags */
 #define IFF_UP        0x1     /* Interface is up */

@@ -34,10 +34,11 @@ typedef struct {
 
 /*
  * Initialize Art-Net receiver.
- * Creates a UDP socket bound to port 6454.
+ * Creates a non-blocking UDP socket bound to port 6454.
+ * my_ip (host byte order) and my_mac are used in ArtPollReply.
  * Returns socket fd >= 0 on success, -1 on error.
  */
-int artnet_init(void);
+int artnet_init(uint32_t my_ip, const uint8_t *my_mac);
 
 /*
  * Receive and parse a single Art-Net ArtDmx packet.

@@ -26,7 +26,8 @@ OABI_CFLAGS = -Wall -Wextra -Os -g \
     -isystem src/oabi/include \
     -march=armv4t -marm \
     -fpic -msingle-pic-base -mpic-register=sl \
-    -static -no-pie
+    -static -no-pie \
+    -DFW_BUILD_DATE='"$(shell date +%Y-%m-%d)"'
 OABI_SRCS = src/oabi/crt0.S src/oabi/syscalls.S \
     src/oabi/minilib.c src/oabi/minisock.c src/oabi/minithread.c \
     src/main.c src/sacn/sacn.c src/sacn/sacn_tx.c src/artnet/artnet.c src/shownet/shownet.c \
@@ -86,7 +87,7 @@ FUZZ_CC := $(shell \
         echo clang; \
     fi)
 
-.PHONY: all clean test test-asan arm-test oabi-daemon bflt oabi-cgi cgi-bflt oabi-probe probe-bflt oabi-lcd-probe lcd-probe-bflt oabi-lcd-partial lcd-partial-bflt oabi-lcd-verify lcd-verify-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt docker-probe-bflt docker-lcd-probe-bflt docker-lcd-partial-bflt docker-lcd-verify-bflt deploy-web fuzz-config fuzz-cgi help
+.PHONY: all clean test test-asan arm-test oabi-daemon bflt oabi-cgi cgi-bflt oabi-probe probe-bflt oabi-lcd-probe lcd-probe-bflt oabi-lcd-partial lcd-partial-bflt oabi-lcd-verify lcd-verify-bflt oabi-netsetup netsetup-bflt docker-build docker-test docker-shell docker-bflt docker-cgi-bflt docker-probe-bflt docker-lcd-probe-bflt docker-lcd-partial-bflt docker-lcd-verify-bflt docker-netsetup-bflt deploy-web fuzz-config fuzz-cgi help
 
 all: $(TARGET_BFLT)
 	@echo "Built $(TARGET_BFLT) ($$(wc -c < $(TARGET_BFLT)) bytes)"
@@ -330,6 +331,31 @@ build/lcd_verify.bflt: build/lcd_verify_reloc.elf tools/elf2bflt.py
 
 docker-lcd-verify-bflt: docker-build
 	$(DOCKER_RUN) make lcd-verify-bflt
+
+# Network setup helper — DHCP link-local + config update
+NETSETUP_SRCS = src/oabi/crt0.S src/oabi/syscalls.S src/oabi/minilib.c \
+    src/config/config.c src/netsetup/netsetup.c
+
+oabi-netsetup: build/netsetup_oabi
+
+build/netsetup_oabi: $(NETSETUP_SRCS) | build
+	$(ARM_CC) $(OABI_CFLAGS) -o $@ $(NETSETUP_SRCS) $(LIBGCC)
+	@SIZE=$$(wc -c < $@); echo "netsetup OABI ELF: $$SIZE bytes"
+
+build/netsetup_reloc.elf: $(NETSETUP_SRCS) src/oabi/flat.ld | build
+	$(ARM_CC) $(OABI_CFLAGS) \
+		-T src/oabi/flat.ld \
+		-Wl,--emit-relocs,--build-id=none \
+		-o $@ $(NETSETUP_SRCS) $(LIBGCC)
+
+netsetup-bflt: build/netsetup.bflt
+
+build/netsetup.bflt: build/netsetup_reloc.elf tools/elf2bflt.py
+	python3 tools/elf2bflt.py $< $@
+	@SIZE=$$(wc -c < $@); echo "netsetup bFLT: $$SIZE bytes"
+
+docker-netsetup-bflt: docker-build
+	$(DOCKER_RUN) make netsetup-bflt
 
 # Minimal test bFLT (hello world — for verifying bFLT format)
 build/hello_device.bflt: tests/hello_device.c src/oabi/crt0.S src/oabi/flat.ld tools/elf2bflt.py | build

@@ -126,6 +126,7 @@ static void handle_sacn_packet(const sacn_packet_t *pkt)
 static void handle_artnet_packet(const artnet_dmx_packet_t *pkt)
 {
     int port;
+    g_artnet_rx_count++;
     for (port = 0; port < DMX_MAX_PORTS; port++) {
         if (g_config.ports[port].universe != pkt->universe)
             continue;
@@ -228,9 +229,11 @@ static uint32_t detect_ip(void)
  * Check whether eth0 link is up via SIOCGIFFLAGS / IFF_RUNNING.
  * Returns 1 if link is up, 0 otherwise.
  *
- * Note: IFF_RUNNING may not be supported on Linux 2.0 / NS7520.
- * Falls back to IFF_UP if IFF_RUNNING is not set but IFF_UP is.
- * Needs on-device verification.
+ * IFF_RUNNING tracks carrier (cable plugged in) on modern Linux.
+ * On Linux 2.0 / NS7520 it may not be supported — if so, we fall
+ * back to IFF_UP, which is always set for a configured interface
+ * and cannot detect cable loss. This means MODE_LINK_DOWN may be
+ * unreachable on this hardware. Needs on-device verification.
  */
 static int detect_link(void)
 {
@@ -250,9 +253,10 @@ static int detect_link(void)
     }
     close(fd);
 
-    /* Prefer IFF_RUNNING (carrier detect), fall back to IFF_UP */
     if (ifr.ifr_flags & IFF_RUNNING)
         return 1;
+    /* IFF_UP is always set for a configured interface — this fallback
+     * means we can't detect cable loss if IFF_RUNNING is unsupported. */
     if (ifr.ifr_flags & IFF_UP)
         return 1;
     return 0;
@@ -401,6 +405,36 @@ static void dmx_input_cycle(const dmx_ops_t *ops, int *fds)
 /* Main — single-threaded event loop                                         */
 /* ========================================================================= */
 
+
+/* ========================================================================= */
+/* DHCP IP polling (device only)                                             */
+/* ========================================================================= */
+
+#ifndef HOST_BUILD
+/*
+ * Poll eth0 for a newly-acquired DHCP IP address.
+ * Updates g_config.ip_addr when an address appears.
+ * Called once per second from the main loop, before LCD snapshot.
+ */
+static void poll_dhcp_ip(void)
+{
+    uint32_t detected;
+
+    if (g_config.ip_addr != 0)
+        return; /* already have an IP */
+
+    detected = detect_ip();
+    if (detected != 0) {
+        g_config.ip_addr = detected;
+        LOG("DHCP acquired IP: %u.%u.%u.%u",
+            (detected >> 24) & 0xff,
+            (detected >> 16) & 0xff,
+            (detected >> 8)  & 0xff,
+            detected & 0xff);
+    }
+}
+#endif
+
 int main(int argc, char *argv[])
 {
     const char *config_path = CONFIG_FILE_PATH;
@@ -456,7 +490,7 @@ int main(int argc, char *argv[])
         if (sacn_sock < 0)
             LOG("WARNING: failed to init sACN socket");
     } else if (g_config.active_protocol == PROTO_ARTNET) {
-        artnet_sock = artnet_init();
+        artnet_sock = artnet_init(g_config.ip_addr, g_config.mac);
         if (artnet_sock < 0)
             LOG("WARNING: failed to init Art-Net");
     } else if (g_config.active_protocol == PROTO_SHOWNET) {
@@ -605,24 +639,11 @@ int main(int argc, char *argv[])
                 memcpy(ls.hostname, g_config.hostname,
                        sizeof(ls.hostname));
                 ls.hostname[sizeof(ls.hostname) - 1] = '\0';
+                poll_dhcp_ip();
                 ls.ip_addr = g_config.ip_addr;
                 memcpy(ls.mac, g_config.mac, 6);
                 ls.addr_mode = g_config.addr_mode;
                 ls.link_up = detect_link();
-
-                /* DHCP: poll for newly-acquired IP */
-                if (ls.ip_addr == 0) {
-                    uint32_t detected = detect_ip();
-                    if (detected != 0) {
-                        ls.ip_addr = detected;
-                        g_config.ip_addr = detected;
-                        LOG("DHCP acquired IP: %u.%u.%u.%u",
-                            (detected >> 24) & 0xff,
-                            (detected >> 16) & 0xff,
-                            (detected >> 8)  & 0xff,
-                            detected & 0xff);
-                    }
-                }
 
                 for (p = 0; p < DMX_MAX_PORTS; p++) {
                     uint32_t age;

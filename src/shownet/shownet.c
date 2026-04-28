@@ -26,6 +26,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -36,7 +37,7 @@
 #include <stdio.h>
 #define LOG(fmt, ...) fprintf(stderr, "shownet: " fmt "\n", ##__VA_ARGS__)
 #else
-#define LOG(fmt, ...) /* no stdio on device */
+#define LOG(fmt, ...) dprintf(2, "shownet: " fmt "\n", ##__VA_ARGS__)
 #endif
 
 /* ShowNet packet offsets */
@@ -111,6 +112,13 @@ int shownet_init(void)
         return -1;
     }
 
+    /* Set non-blocking — select() is broken on Linux 2.0/uClinux for UDP */
+    {
+        int nonblock = 1;
+        ioctl(sock, 0x5421, &nonblock); /* FIONBIO */
+    }
+
+    LOG("listening on port %d", SHOWNET_PORT);
     return sock;
 }
 

@@ -19,26 +19,10 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
-
-/* File open flags (must match kernel ABI) */
-#define _O_WRONLY  1
-#define _O_CREAT   0100
-#define _O_TRUNC   01000
-
-/* Network interface ioctls */
-#define SIOCGIFADDR    0x8915
-#define SIOCSIFADDR    0x8916
-#define SIOCGIFNETMASK 0x891b
-#define SIOCSIFNETMASK 0x891c
-#define SIOCGIFHWADDR  0x8927
-#define IFNAMSIZ       16
-
-struct ifreq {
-    char            ifr_name[IFNAMSIZ];
-    struct sockaddr ifr_addr;
-};
+#include <net/if.h>
 
 /*
  * Extract IPv4 address from sockaddr (network byte order → host uint32_t).
@@ -117,6 +101,14 @@ static int set_iface_netmask(int fd, const char *ifname, uint32_t mask)
     return ioctl(fd, SIOCSIFNETMASK, &ifr);
 }
 
+static void log_ip(int logfd, const char *label, uint32_t ip)
+{
+    if (logfd >= 0)
+        dprintf(logfd, "%s: %u.%u.%u.%u\n", label,
+                (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+                (ip >> 8) & 0xFF, ip & 0xFF);
+}
+
 int main(void)
 {
     int fd;
@@ -125,7 +117,7 @@ int main(void)
     node_config_t config;
     int logfd;
 
-    logfd = open("/tmp/netsetup.log", _O_WRONLY | _O_CREAT | _O_TRUNC, 0644);
+    logfd = open("/tmp/netsetup.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
 
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
@@ -133,38 +125,8 @@ int main(void)
         return 1;
     }
 
-    /* Read current IP from eth0 — log raw ioctl result for debugging */
-    {
-        struct ifreq ifr;
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, "eth0", IFNAMSIZ - 1);
-        if (ioctl(fd, SIOCGIFADDR, &ifr) < 0) {
-            ip = 0;
-            if (logfd >= 0) dprintf(logfd, "SIOCGIFADDR failed\n");
-        } else {
-            /* Dump raw sockaddr bytes for debugging */
-            if (logfd >= 0) {
-                const uint8_t *raw = (const uint8_t *)&ifr.ifr_addr;
-                dprintf(logfd, "ifr_addr raw[0..15]:");
-                for (int i = 0; i < 16; i++)
-                    dprintf(logfd, " %02x", raw[i]);
-                dprintf(logfd, "\n");
-                dprintf(logfd, "sa_family=%u sa_data[0..5]: %02x %02x %02x %02x %02x %02x\n",
-                        ifr.ifr_addr.sa_family,
-                        (uint8_t)ifr.ifr_addr.sa_data[0],
-                        (uint8_t)ifr.ifr_addr.sa_data[1],
-                        (uint8_t)ifr.ifr_addr.sa_data[2],
-                        (uint8_t)ifr.ifr_addr.sa_data[3],
-                        (uint8_t)ifr.ifr_addr.sa_data[4],
-                        (uint8_t)ifr.ifr_addr.sa_data[5]);
-            }
-            ip = sockaddr_to_ip(&ifr.ifr_addr);
-            if (logfd >= 0)
-                dprintf(logfd, "read_ip: %u.%u.%u.%u (0x%08x)\n",
-                        (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
-                        (ip >> 8) & 0xFF, ip & 0xFF, ip);
-        }
-    }
+    ip = read_iface_ip(fd, "eth0");
+    log_ip(logfd, "eth0 current", ip);
 
     if (ip == 0) {
         /* No IP — assign link-local derived from MAC.
@@ -175,27 +137,19 @@ int main(void)
             uint8_t o4 = mac[5];
             uint32_t ll = (169u << 24) | (254u << 16) |
                           ((uint32_t)o3 << 8) | o4;
-            if (logfd >= 0)
-                dprintf(logfd, "assign link-local: %u.%u.%u.%u mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                        (ll >> 24) & 0xFF, (ll >> 16) & 0xFF,
-                        (ll >> 8) & 0xFF, ll & 0xFF,
-                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            log_ip(logfd, "assign link-local", ll);
             set_iface_ip(fd, "eth0", ll);
             set_iface_netmask(fd, "eth0", 0xFFFF0000); /* 255.255.0.0 */
         }
-        /* Re-read to confirm */
         ip = read_iface_ip(fd, "eth0");
-        if (logfd >= 0)
-            dprintf(logfd, "after link-local: %u.%u.%u.%u\n",
-                    (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
-                    (ip >> 8) & 0xFF, ip & 0xFF);
+        log_ip(logfd, "after link-local", ip);
     }
 
     close(fd);
 
     if (ip == 0) {
         if (logfd >= 0) { write(logfd, "no IP, exiting\n", 15); close(logfd); }
-        return 0; /* Still no IP — nothing to update */
+        return 0;
     }
 
     /* Update config with actual interface address.
@@ -203,13 +157,7 @@ int main(void)
     if (config_load(CONFIG_FILE_PATH, &config) == 0) {
         uint32_t mask;
 
-        if (logfd >= 0)
-            dprintf(logfd, "config before: ip=%u.%u.%u.%u mask=%u.%u.%u.%u\n",
-                    (config.ip_addr >> 24) & 0xFF, (config.ip_addr >> 16) & 0xFF,
-                    (config.ip_addr >> 8) & 0xFF, config.ip_addr & 0xFF,
-                    (config.netmask >> 24) & 0xFF, (config.netmask >> 16) & 0xFF,
-                    (config.netmask >> 8) & 0xFF, config.netmask & 0xFF);
-
+        log_ip(logfd, "config old ip", config.ip_addr);
         config.ip_addr = ip;
 
         fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -220,15 +168,8 @@ int main(void)
             close(fd);
         }
 
-        if (logfd >= 0)
-            dprintf(logfd, "config after: ip=%u.%u.%u.%u mask=%u.%u.%u.%u\n",
-                    (config.ip_addr >> 24) & 0xFF, (config.ip_addr >> 16) & 0xFF,
-                    (config.ip_addr >> 8) & 0xFF, config.ip_addr & 0xFF,
-                    (config.netmask >> 24) & 0xFF, (config.netmask >> 16) & 0xFF,
-                    (config.netmask >> 8) & 0xFF, config.netmask & 0xFF);
-
         config_save(CONFIG_FILE_PATH, &config);
-        if (logfd >= 0) write(logfd, "config saved\n", 13);
+        log_ip(logfd, "config saved ip", config.ip_addr);
     } else {
         if (logfd >= 0) write(logfd, "config_load failed\n", 19);
     }

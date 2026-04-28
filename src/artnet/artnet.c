@@ -17,6 +17,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -27,7 +28,7 @@
 #include <stdio.h>
 #define LOG(fmt, ...) fprintf(stderr, "artnet: " fmt "\n", ##__VA_ARGS__)
 #else
-#define LOG(fmt, ...) /* no stdio on device */
+#define LOG(fmt, ...) dprintf(2, "artnet: " fmt "\n", ##__VA_ARGS__)
 #endif
 
 /* Art-Net packet offsets */
@@ -49,11 +50,19 @@ static uint16_t read_u16_le(const uint8_t *p)
     return (uint16_t)(p[0] | (p[1] << 8));
 }
 
-int artnet_init(void)
+/* Node identity for ArtPollReply — set during init */
+static uint32_t g_my_ip;
+static uint8_t  g_my_mac[6];
+
+int artnet_init(uint32_t my_ip, const uint8_t *my_mac)
 {
     int sock;
     int reuse = 1;
     struct sockaddr_in addr;
+
+    g_my_ip = my_ip;
+    if (my_mac)
+        memcpy(g_my_mac, my_mac, 6);
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
@@ -76,6 +85,13 @@ int artnet_init(void)
     int bcast = 1;
     setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &bcast, sizeof(bcast));
 
+    /* Set non-blocking — select() is broken on Linux 2.0/uClinux for UDP */
+    {
+        int nonblock = 1;
+        ioctl(sock, 0x5421, &nonblock); /* FIONBIO */
+    }
+
+    LOG("listening on port %d", ARTNET_PORT);
     return sock;
 }
 
@@ -94,8 +110,11 @@ static void artnet_send_poll_reply(int sock_fd, struct sockaddr_in *dest,
     reply[8] = (ARTNET_OP_POLL_REPLY) & 0xFF;
     reply[9] = (ARTNET_OP_POLL_REPLY >> 8) & 0xFF;
 
-    /* IP address (bytes 10-13) */
-    memcpy(reply + 10, &my_ip, 4);
+    /* IP address (bytes 10-13, network byte order) */
+    {
+        uint32_t ip_nbo = htonl(my_ip);
+        memcpy(reply + 10, &ip_nbo, 4);
+    }
 
     /* Port (bytes 14-15, little-endian) */
     reply[14] = ARTNET_PORT & 0xFF;
@@ -148,7 +167,7 @@ int artnet_receive(int sock_fd, artnet_dmx_packet_t *pkt)
 
     /* Handle ArtPoll → send ArtPollReply */
     if (opcode == ARTNET_OP_POLL) {
-        artnet_send_poll_reply(sock_fd, &from, 0, NULL);
+        artnet_send_poll_reply(sock_fd, &from, g_my_ip, g_my_mac);
         return -1; /* not a DMX packet */
     }
 
